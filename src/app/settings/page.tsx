@@ -1,11 +1,20 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { CheckCircle2, Lock, Save, Settings, Sparkles, Terminal } from "lucide-react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Lock,
+  Save,
+  Settings,
+  Sparkles,
+  Terminal,
+} from "lucide-react";
 
 interface AiConfigStatus {
   configuredProvider: string;
   activeProvider: string;
+  isRemoteAiEndpoint: boolean;
   ollamaBaseUrl: string;
   ollamaChatModel: string;
   ollamaPlanningModel: string;
@@ -21,9 +30,12 @@ export default function SettingsPage() {
   const [usdInrRate, setUsdInrRate] = useState("84.5");
   const [emergencyTarget, setEmergencyTarget] = useState("600000");
   const [pinEnabled, setPinEnabled] = useState(false);
+  const [isProduction, setIsProduction] = useState(false);
   const [aiConfig, setAiConfig] = useState<AiConfigStatus | null>(null);
+  const [currentPin, setCurrentPin] = useState("");
   const [newPin, setNewPin] = useState("");
   const [msg, setMsg] = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
 
   useEffect(() => {
     fetch("/api/settings", { cache: "no-store" })
@@ -33,6 +45,7 @@ export default function SettingsPage() {
         if (json.emergencyFundTarget)
           setEmergencyTarget(String(json.emergencyFundTarget));
         setPinEnabled(Boolean(json.pinEnabled));
+        setIsProduction(Boolean(json.isProduction));
         if (json.aiConfig) setAiConfig(json.aiConfig);
       });
   }, []);
@@ -40,6 +53,7 @@ export default function SettingsPage() {
   async function savePreferences(e: React.FormEvent) {
     e.preventDefault();
     setMsg("");
+    setErrorMsg("");
     const res = await fetch("/api/settings", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -48,37 +62,56 @@ export default function SettingsPage() {
         emergencyFundTarget: Number(emergencyTarget),
       }),
     });
-    if (res.ok) setMsg("Settings saved.");
+    if (res.ok) {
+      setMsg("Settings saved.");
+    } else {
+      const err = await res.json().catch(() => ({}));
+      setErrorMsg(err.error || "Failed to save settings");
+    }
   }
 
   async function enablePin(e: React.FormEvent) {
     e.preventDefault();
     setMsg("");
+    setErrorMsg("");
     const res = await fetch("/api/auth/pin", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "set", pin: newPin }),
+      body: JSON.stringify({
+        action: "set",
+        pin: newPin,
+        currentPin: pinEnabled ? currentPin : undefined,
+      }),
     });
     const json = await res.json();
     if (res.ok) {
       setPinEnabled(true);
       setNewPin("");
-      setMsg("Local PIN lock enabled.");
+      setCurrentPin("");
+      setMsg("PIN lock updated.");
     } else {
-      setMsg(json.error || "Could not set PIN");
+      setErrorMsg(json.error || "Could not set PIN");
     }
   }
 
   async function disablePin() {
     setMsg("");
+    setErrorMsg("");
     const res = await fetch("/api/auth/pin", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "disable" }),
+      body: JSON.stringify({
+        action: "disable",
+        currentPin,
+      }),
     });
+    const json = await res.json();
     if (res.ok) {
       setPinEnabled(false);
+      setCurrentPin("");
       setMsg("PIN lock disabled.");
+    } else {
+      setErrorMsg(json.error || "Could not disable PIN");
     }
   }
 
@@ -91,11 +124,11 @@ export default function SettingsPage() {
     <div className="space-y-6 max-w-3xl">
       <div>
         <h1 className="text-2xl font-bold text-slate-900">
-          Settings & Open-Source AI Environment
+          Settings & AI Environment
         </h1>
         <p className="text-sm text-slate-500">
-          100% open-source local AI via Ollama (.env.local), PIN lock, and
-          portfolio targets
+          Open-source AI via Ollama or OpenAI-compatible endpoints, Argon2id PIN
+          lock, and portfolio targets
         </p>
       </div>
 
@@ -104,13 +137,18 @@ export default function SettingsPage() {
           {msg}
         </div>
       )}
+      {errorMsg && (
+        <div className="rounded-xl bg-rose-50 border border-rose-200 px-4 py-2.5 text-sm text-rose-700">
+          {errorMsg}
+        </div>
+      )}
 
       {/* Open-Source AI Status */}
       <div className="rounded-2xl bg-white border border-indigo-200 p-6 shadow-xs space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2 font-semibold text-slate-900">
             <Sparkles className="h-4 w-4 text-violet-600" />
-            Open-Source AI Stack (.env.local)
+            AI Stack Configuration
           </div>
           <div className="flex items-center gap-2">
             <span
@@ -130,15 +168,13 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        <p className="text-xs text-slate-600 leading-relaxed">
-          Configured in{" "}
-          <code className="bg-slate-100 px-1.5 py-0.5 rounded">.env.local</code>{" "}
-          (template in{" "}
-          <code className="bg-slate-100 px-1.5 py-0.5 rounded">
-            .env.example
-          </code>
-          ). Uses local open-source models only—no data leaves your machine.
-        </p>
+        {aiConfig?.isRemoteAiEndpoint && (
+          <div className="flex items-center gap-2 rounded-xl bg-amber-50 border border-amber-200 px-3.5 py-2 text-xs text-amber-900">
+            <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0" />
+            Remote AI endpoint configured. Users will be asked for explicit
+            confirmation before portfolio summaries or documents leave the host.
+          </div>
+        )}
 
         {aiConfig && (
           <>
@@ -234,6 +270,7 @@ export default function SettingsPage() {
             <input
               type="number"
               step="0.01"
+              min="1"
               value={usdInrRate}
               onChange={(e) => setUsdInrRate(e.target.value)}
               className="w-full rounded-xl border border-slate-200 px-3 py-2"
@@ -245,6 +282,7 @@ export default function SettingsPage() {
             </label>
             <input
               type="number"
+              min="0"
               value={emergencyTarget}
               onChange={(e) => setEmergencyTarget(e.target.value)}
               className="w-full rounded-xl border border-slate-200 px-3 py-2"
@@ -265,7 +303,7 @@ export default function SettingsPage() {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 font-semibold text-slate-900">
             <Lock className="h-4 w-4 text-slate-700" />
-            Local PIN Lock
+            PIN Authentication (Argon2id)
           </div>
           <span
             className={`text-xs px-2.5 py-0.5 rounded-full font-medium ${
@@ -274,32 +312,45 @@ export default function SettingsPage() {
                 : "bg-slate-100 text-slate-600"
             }`}
           >
-            {pinEnabled ? "Enabled" : "Disabled"}
+            {pinEnabled ? "Enabled" : "Disabled (Dev only)"}
           </span>
         </div>
 
-        <form onSubmit={enablePin} className="flex gap-2 text-sm">
+        <form onSubmit={enablePin} className="flex flex-col sm:flex-row gap-2 text-sm">
+          {pinEnabled && (
+            <input
+              type="password"
+              inputMode="numeric"
+              maxLength={8}
+              required
+              placeholder="Current PIN"
+              value={currentPin}
+              onChange={(e) => setCurrentPin(e.target.value.replace(/\D/g, ""))}
+              className="sm:w-36 rounded-xl border border-slate-200 px-3 py-2"
+            />
+          )}
           <input
             type="password"
             inputMode="numeric"
             maxLength={8}
-            placeholder="Enter 4–8 digit PIN"
+            placeholder="New 4–8 digit PIN"
             value={newPin}
             onChange={(e) => setNewPin(e.target.value.replace(/\D/g, ""))}
             className="flex-1 rounded-xl border border-slate-200 px-3 py-2"
           />
           <button
             type="submit"
-            disabled={newPin.length < 4}
+            disabled={newPin.length < 4 || (pinEnabled && currentPin.length < 4)}
             className="rounded-xl bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white px-4 py-2 font-medium"
           >
             {pinEnabled ? "Update PIN" : "Enable PIN"}
           </button>
-          {pinEnabled && (
+          {pinEnabled && !isProduction && (
             <button
               type="button"
+              disabled={currentPin.length < 4}
               onClick={disablePin}
-              className="rounded-xl border border-rose-200 text-rose-600 hover:bg-rose-50 px-4 py-2 font-medium"
+              className="rounded-xl border border-rose-200 text-rose-600 hover:bg-rose-50 disabled:opacity-50 px-4 py-2 font-medium"
             >
               Disable
             </button>

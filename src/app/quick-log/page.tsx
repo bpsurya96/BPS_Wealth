@@ -21,8 +21,8 @@ interface RentalItem {
 
 export default function QuickLogPage() {
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
-  const [salaryAmount, setSalaryAmount] = useState("221000");
-  const [salaryAccount, setSalaryAccount] = useState("ICICI");
+  const [salaryAmount, setSalaryAmount] = useState("");
+  const [salaryAccount, setSalaryAccount] = useState("Bank");
   const [sips, setSips] = useState<
     Array<SipItem & { enabled: boolean; amount: string; nav: string }>
   >([]);
@@ -33,12 +33,18 @@ export default function QuickLogPage() {
   >([]);
   const [submitting, setSubmitting] = useState(false);
   const [resultMsg, setResultMsg] = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
 
   useEffect(() => {
     fetch("/api/quick-log", { cache: "no-store" })
       .then((r) => r.json())
       .then((json) => {
-        if (json.defaultSalary) setSalaryAmount(String(json.defaultSalary));
+        if (json.defaultSalary > 0) {
+          setSalaryAmount(String(json.defaultSalary));
+        }
+        if (json.defaultAccount) {
+          setSalaryAccount(String(json.defaultAccount));
+        }
         setSips(
           (json.sips ?? []).map((s: SipItem) => ({
             ...s,
@@ -55,6 +61,9 @@ export default function QuickLogPage() {
             solarCharge: "0",
           }))
         );
+      })
+      .catch(() => {
+        setErrorMsg("Failed to load quick-log defaults");
       });
   }, []);
 
@@ -62,6 +71,7 @@ export default function QuickLogPage() {
     e.preventDefault();
     setSubmitting(true);
     setResultMsg("");
+    setErrorMsg("");
     try {
       const res = await fetch("/api/quick-log", {
         method: "POST",
@@ -96,6 +106,8 @@ export default function QuickLogPage() {
             7
           )}!`
         );
+      } else {
+        setErrorMsg(json.error || "Failed to log monthly batch");
       }
     } finally {
       setSubmitting(false);
@@ -110,7 +122,7 @@ export default function QuickLogPage() {
         </h1>
         <p className="text-sm text-slate-500">
           Record this month&apos;s Salary, Shop Rents, and all planned SIPs /
-          installments (MF, US ETFs, RD, Chit, NPS, PPF) in one click.
+          installments in one atomic transaction.
         </p>
       </div>
 
@@ -120,9 +132,13 @@ export default function QuickLogPage() {
           {resultMsg}
         </div>
       )}
+      {errorMsg && (
+        <div className="rounded-xl bg-rose-50 border border-rose-200 px-4 py-3 text-sm text-rose-700">
+          {errorMsg}
+        </div>
+      )}
 
       <form onSubmit={submitBatch} className="space-y-6">
-        {/* Date & Salary */}
         <div className="rounded-2xl bg-white border border-slate-200 p-5 shadow-xs space-y-4">
           <h2 className="font-semibold text-slate-900">1. Income</h2>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
@@ -144,6 +160,8 @@ export default function QuickLogPage() {
               </label>
               <input
                 type="number"
+                min="0"
+                placeholder="0"
                 value={salaryAmount}
                 onChange={(e) => setSalaryAmount(e.target.value)}
                 className="w-full rounded-xl border border-slate-200 px-3 py-2"
@@ -185,6 +203,7 @@ export default function QuickLogPage() {
                   </label>
                   <input
                     type="number"
+                    min="0"
                     placeholder="Rent ₹"
                     value={r.rentAmount}
                     onChange={(e) => {
@@ -196,6 +215,7 @@ export default function QuickLogPage() {
                   />
                   <input
                     type="number"
+                    min="0"
                     placeholder="Solar Charge ₹"
                     value={r.solarCharge}
                     onChange={(e) => {
@@ -217,7 +237,6 @@ export default function QuickLogPage() {
           )}
         </div>
 
-        {/* Planned SIPs & Installments */}
         <div className="rounded-2xl bg-white border border-slate-200 p-5 shadow-xs space-y-4">
           <h2 className="font-semibold text-slate-900">
             2. Planned SIPs & Monthly Investments
@@ -256,6 +275,7 @@ export default function QuickLogPage() {
                     <input
                       type="number"
                       step="any"
+                      min="0"
                       value={s.amount}
                       onChange={(e) => {
                         const copy = [...sips];
@@ -270,6 +290,7 @@ export default function QuickLogPage() {
                     <input
                       type="number"
                       step="any"
+                      min="0"
                       value={s.nav}
                       onChange={(e) => {
                         const copy = [...sips];
@@ -283,8 +304,8 @@ export default function QuickLogPage() {
                       {estUnits > 0
                         ? `${estUnits.toFixed(3)} units`
                         : s.currency === "USD"
-                        ? formatUSD(amt)
-                        : formatINR(amt)}
+                          ? formatUSD(amt)
+                          : formatINR(amt)}
                     </div>
                   </div>
                 );

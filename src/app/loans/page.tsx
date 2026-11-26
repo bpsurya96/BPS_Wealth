@@ -13,6 +13,7 @@ import {
 import { formatINR } from "@/lib/utils";
 import { AiInsightBanner } from "@/components/AiInsightBanner";
 import { AiAssistantDrawer } from "@/components/AiAssistantDrawer";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 
 interface Loan {
   id: number;
@@ -68,6 +69,11 @@ export default function LoansAndInsurancePage() {
   const [docs, setDocs] = useState<DocItem[]>([]);
   const [aiOpen, setAiOpen] = useState(false);
   const [extractMsg, setExtractMsg] = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
+  const [pendingDelete, setPendingDelete] = useState<{
+    kind: "loan" | "policy" | "doc";
+    id: number;
+  } | null>(null);
 
   const [loanForm, setLoanForm] = useState({
     name: "",
@@ -84,6 +90,7 @@ export default function LoansAndInsurancePage() {
     policyType: "term",
     provider: "",
     premiumAmount: "",
+    premiumFrequency: "annual",
     coverAmount: "",
     expiryDate: "",
     notes: "",
@@ -157,15 +164,20 @@ export default function LoansAndInsurancePage() {
         policyType: "term",
         provider: "",
         premiumAmount: "",
+        premiumFrequency: "annual",
         coverAmount: "",
         expiryDate: "",
         notes: "",
       });
       await load();
+    } else {
+      const err = await res.json().catch(() => ({}));
+      setErrorMsg(err.error || "Failed to add policy");
     }
   }
 
   async function uploadPolicyDoc(policyId: number, file: File) {
+    setErrorMsg("");
     const fd = new FormData();
     fd.append("file", file);
     fd.append("entityType", "insurance");
@@ -174,11 +186,23 @@ export default function LoansAndInsurancePage() {
     const res = await fetch("/api/documents", { method: "POST", body: fd });
     if (res.ok) {
       await load();
+    } else {
+      const err = await res.json().catch(() => ({}));
+      setErrorMsg(err.error || "Document upload failed");
     }
   }
 
-  async function deleteDoc(docId: number) {
-    await fetch(`/api/documents?id=${docId}`, { method: "DELETE" });
+  async function executePendingDelete() {
+    if (!pendingDelete) return;
+    const { kind, id } = pendingDelete;
+    const url =
+      kind === "loan"
+        ? `/api/loans?id=${id}`
+        : kind === "policy"
+          ? `/api/insurance?id=${id}`
+          : `/api/documents?id=${id}`;
+    await fetch(url, { method: "DELETE" });
+    setPendingDelete(null);
     await load();
   }
 
@@ -196,6 +220,7 @@ export default function LoansAndInsurancePage() {
         policyType: String(ex.policyType || "term"),
         provider: String(ex.provider || ""),
         premiumAmount: ex.premiumAmount ? String(ex.premiumAmount) : "",
+        premiumFrequency: String(ex.premiumFrequency || "annual"),
         coverAmount: String(ex.coverAmount || ""),
         expiryDate: String(ex.expiryDate || ""),
         notes: String(ex.notes || ""),
@@ -221,6 +246,12 @@ export default function LoansAndInsurancePage() {
       </div>
 
       <AiInsightBanner scope="loans" onAskAi={() => setAiOpen(true)} />
+
+      {errorMsg && (
+        <div className="rounded-xl bg-rose-50 border border-rose-200 px-4 py-2.5 text-sm text-rose-700">
+          {errorMsg}
+        </div>
+      )}
 
       {/* Loans */}
       <section className="rounded-2xl bg-white border border-slate-200 p-5 shadow-xs space-y-4">
@@ -317,10 +348,7 @@ export default function LoansAndInsurancePage() {
               </div>
               <button
                 type="button"
-                onClick={async () => {
-                  await fetch(`/api/loans?id=${l.id}`, { method: "DELETE" });
-                  await load();
-                }}
+                onClick={() => setPendingDelete({ kind: "loan", id: l.id })}
                 className="p-1.5 rounded-lg hover:bg-rose-50 text-rose-500"
               >
                 <Trash2 className="h-4 w-4" />
@@ -404,7 +432,7 @@ export default function LoansAndInsurancePage() {
 
         <form
           onSubmit={addPolicy}
-          className="grid grid-cols-2 sm:grid-cols-6 gap-2 text-xs bg-slate-50 p-3 rounded-xl border border-slate-200"
+          className="grid grid-cols-2 sm:grid-cols-7 gap-2 text-xs bg-slate-50 p-3 rounded-xl border border-slate-200"
         >
           <input
             required
@@ -428,13 +456,26 @@ export default function LoansAndInsurancePage() {
           </select>
           <input
             type="number"
-            placeholder="Annual Premium ₹"
+            placeholder="Premium ₹"
             value={policyForm.premiumAmount}
             onChange={(e) =>
               setPolicyForm({ ...policyForm, premiumAmount: e.target.value })
             }
             className="rounded-lg border border-slate-200 px-2.5 py-2 bg-white"
           />
+          <select
+            value={policyForm.premiumFrequency}
+            onChange={(e) =>
+              setPolicyForm({
+                ...policyForm,
+                premiumFrequency: e.target.value,
+              })
+            }
+            className="rounded-lg border border-slate-200 px-2.5 py-2 bg-white"
+          >
+            <option value="annual">Annual</option>
+            <option value="monthly">Monthly</option>
+          </select>
           <input
             placeholder="Cover (e.g. 1 Cr)"
             value={policyForm.coverAmount}
@@ -490,12 +531,9 @@ export default function LoansAndInsurancePage() {
                   </div>
                   <button
                     type="button"
-                    onClick={async () => {
-                      await fetch(`/api/insurance?id=${p.id}`, {
-                        method: "DELETE",
-                      });
-                      await load();
-                    }}
+                    onClick={() =>
+                      setPendingDelete({ kind: "policy", id: p.id })
+                    }
                     className="p-1.5 rounded-lg hover:bg-rose-50 text-rose-500"
                   >
                     <Trash2 className="h-4 w-4" />
@@ -513,11 +551,12 @@ export default function LoansAndInsurancePage() {
                       Upload PDF/Img
                       <input
                         type="file"
-                        accept=".pdf,.png,.jpg,.jpeg,.webp,.doc,.docx"
+                        accept=".pdf,.png,.jpg,.jpeg,.webp,.txt,.csv"
                         className="hidden"
                         onChange={(e) => {
                           const f = e.target.files?.[0];
                           if (f) uploadPolicyDoc(p.id, f);
+                          e.target.value = "";
                         }}
                       />
                     </label>
@@ -542,7 +581,9 @@ export default function LoansAndInsurancePage() {
                           </a>
                           <button
                             type="button"
-                            onClick={() => deleteDoc(d.id)}
+                            onClick={() =>
+                              setPendingDelete({ kind: "doc", id: d.id })
+                            }
                             className="text-rose-500 hover:text-rose-700 ml-2"
                           >
                             <Trash2 className="h-3 w-3" />
@@ -557,6 +598,15 @@ export default function LoansAndInsurancePage() {
           })}
         </div>
       </section>
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title="Confirm Deletion"
+        message="Are you sure you want to permanently delete this record?"
+        confirmLabel="Delete"
+        onConfirm={executePendingDelete}
+        onCancel={() => setPendingDelete(null)}
+      />
 
       <AiAssistantDrawer
         open={aiOpen}

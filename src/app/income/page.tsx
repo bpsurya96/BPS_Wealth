@@ -5,6 +5,7 @@ import { Building2, Plus, Trash2, Wallet } from "lucide-react";
 import { formatCompactINR, formatINR } from "@/lib/utils";
 import { AiInsightBanner } from "@/components/AiInsightBanner";
 import { AiAssistantDrawer } from "@/components/AiAssistantDrawer";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 
 interface IncomeEntry {
   id: number;
@@ -46,6 +47,11 @@ export default function IncomePage() {
   const [properties, setProperties] = useState<RentalProperty[]>([]);
   const [payments, setPayments] = useState<RentalPayment[]>([]);
   const [aiOpen, setAiOpen] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
+  const [pendingDelete, setPendingDelete] = useState<{
+    kind: "income" | "payment";
+    id: number;
+  } | null>(null);
 
   const [incomeForm, setIncomeForm] = useState({
     date: new Date().toISOString().slice(0, 10),
@@ -105,6 +111,7 @@ export default function IncomePage() {
 
   async function addIncome(e: React.FormEvent) {
     e.preventDefault();
+    setErrorMsg("");
     const res = await fetch("/api/income", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -116,11 +123,15 @@ export default function IncomePage() {
     if (res.ok) {
       setIncomeForm((prev) => ({ ...prev, inhandAmount: "", notes: "" }));
       await load();
+    } else {
+      const err = await res.json().catch(() => ({}));
+      setErrorMsg(err.error || "Failed to add income");
     }
   }
 
   async function deleteIncome(id: number) {
     await fetch(`/api/income?id=${id}`, { method: "DELETE" });
+    setPendingDelete(null);
     await load();
   }
 
@@ -174,6 +185,7 @@ export default function IncomePage() {
 
   async function deleteRentPayment(id: number) {
     await fetch(`/api/rentals?kind=payment&id=${id}`, { method: "DELETE" });
+    setPendingDelete(null);
     await load();
   }
 
@@ -200,6 +212,12 @@ export default function IncomePage() {
       </div>
 
       <AiInsightBanner scope="income" onAskAi={() => setAiOpen(true)} />
+
+      {errorMsg && (
+        <div className="rounded-xl bg-rose-50 border border-rose-200 px-4 py-2.5 text-sm text-rose-700">
+          {errorMsg}
+        </div>
+      )}
 
       {/* Split Summary */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -346,7 +364,9 @@ export default function IncomePage() {
                     <td className="px-4 py-2.5 text-right">
                       <button
                         type="button"
-                        onClick={() => deleteIncome(inc.id)}
+                        onClick={() =>
+                          setPendingDelete({ kind: "income", id: inc.id })
+                        }
                         className="p-1.5 rounded-lg hover:bg-rose-50 text-rose-500"
                       >
                         <Trash2 className="h-4 w-4" />
@@ -566,7 +586,9 @@ export default function IncomePage() {
                     <td className="px-4 py-2.5 text-right">
                       <button
                         type="button"
-                        onClick={() => deleteRentPayment(rp.id)}
+                        onClick={() =>
+                          setPendingDelete({ kind: "payment", id: rp.id })
+                        }
                         className="p-1.5 rounded-lg hover:bg-rose-50 text-rose-500"
                       >
                         <Trash2 className="h-4 w-4" />
@@ -579,6 +601,22 @@ export default function IncomePage() {
           </table>
         </div>
       </section>
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title="Delete Income / Rent Record?"
+        message="This will permanently remove the selected record from the ledger."
+        confirmLabel="Delete"
+        onConfirm={() => {
+          if (!pendingDelete) return;
+          if (pendingDelete.kind === "income") {
+            deleteIncome(pendingDelete.id);
+          } else {
+            deleteRentPayment(pendingDelete.id);
+          }
+        }}
+        onCancel={() => setPendingDelete(null)}
+      />
 
       <AiAssistantDrawer
         open={aiOpen}

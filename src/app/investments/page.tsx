@@ -15,6 +15,7 @@ import {
 import { formatINR, formatPercent, formatUSD } from "@/lib/utils";
 import { AiInsightBanner } from "@/components/AiInsightBanner";
 import { AiAssistantDrawer } from "@/components/AiAssistantDrawer";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 
 interface Category {
   id: number;
@@ -76,6 +77,8 @@ export default function InvestmentsPage() {
   const [showAdd, setShowAdd] = useState(false);
   const [showAddCat, setShowAddCat] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
+  const [holdingToDelete, setHoldingToDelete] = useState<number | null>(null);
 
   const [newCat, setNewCat] = useState({
     label: "",
@@ -191,7 +194,12 @@ export default function InvestmentsPage() {
   }
 
   async function deleteHolding(id: number) {
-    await fetch(`/api/investments?id=${id}`, { method: "DELETE" });
+    const res = await fetch(`/api/investments?id=${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      setErrorMsg(err.error || "Failed to delete holding");
+    }
+    setHoldingToDelete(null);
     await load();
   }
 
@@ -256,6 +264,12 @@ export default function InvestmentsPage() {
       </div>
 
       <AiInsightBanner scope="investments" onAskAi={() => setAiOpen(true)} />
+
+      {errorMsg && (
+        <div className="rounded-xl bg-rose-50 border border-rose-200 px-4 py-2.5 text-sm text-rose-700">
+          {errorMsg}
+        </div>
+      )}
 
       {/* View Switcher & Summary */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
@@ -494,7 +508,7 @@ export default function InvestmentsPage() {
                               </Link>
                               <button
                                 type="button"
-                                onClick={() => deleteHolding(h.id)}
+                                onClick={() => setHoldingToDelete(h.id)}
                                 className="p-1.5 rounded-lg hover:bg-rose-50 text-rose-500"
                                 title="Delete Holding"
                               >
@@ -896,6 +910,17 @@ export default function InvestmentsPage() {
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        open={holdingToDelete !== null}
+        title="Delete Investment Holding?"
+        message="This will permanently delete the holding and all of its transaction ledger entries."
+        confirmLabel="Delete Holding"
+        onConfirm={() =>
+          holdingToDelete !== null && deleteHolding(holdingToDelete)
+        }
+        onCancel={() => setHoldingToDelete(null)}
+      />
 
       <AiAssistantDrawer
         open={aiOpen}

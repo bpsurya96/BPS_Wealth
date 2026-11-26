@@ -1,106 +1,139 @@
 import crypto from "crypto";
 import fs from "fs";
-import path from "path";
 import { NextRequest, NextResponse } from "next/server";
-import { and, desc, eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { db, paths } from "@/db";
 import { documents } from "@/db/schema";
-import { requireUnlocked } from "@/lib/auth";
+import { requireAdminSession } from "@/lib/auth";
+import { verifyCsrf } from "@/lib/csrf";
+import { AppError, handleApiError } from "@/lib/errors";
+import {
+  ALLOWED_DOCUMENT_EXTS,
+  MAX_DOCUMENT_BYTES,
+  resolveContainedPath,
+  validateUploadedFile,
+} from "@/lib/upload-security";
+
+const ALLOWED_ENTITY_TYPES = new Set([
+  "insurance",
+  "loan",
+  "investment",
+  "general",
+]);
 
 export async function GET(req: NextRequest) {
-  if (!(await requireUnlocked())) {
-    return NextResponse.json({ error: "Locked" }, { status: 401 });
-  }
-  const entityType = req.nextUrl.searchParams.get("entityType");
-  const entityIdParam = req.nextUrl.searchParams.get("entityId");
+  try {
+    await requireAdminSession();
+    const entityType = req.nextUrl.searchParams.get("entityType");
+    const entityIdParam = req.nextUrl.searchParams.get("entityId");
 
-  let rows = db
-    .select()
-    .from(documents)
-    .orderBy(desc(documents.uploadedAt))
-    .all();
+    let rows = db
+      .select()
+      .from(documents)
+      .orderBy(desc(documents.uploadedAt))
+      .all();
 
-  if (entityType) {
-    rows = rows.filter((d) => d.entityType === entityType);
-  }
-  if (entityIdParam !== null) {
-    const eid = Number(entityIdParam);
-    if (Number.isFinite(eid)) {
-      rows = rows.filter((d) => d.entityId === eid);
+    if (entityType) {
+      rows = rows.filter((d) => d.entityType === entityType);
     }
+    if (entityIdParam !== null) {
+      const eid = Number(entityIdParam);
+      if (Number.isFinite(eid)) {
+        rows = rows.filter((d) => d.entityId === eid);
+      }
+    }
+    return NextResponse.json({ documents: rows });
+  } catch (err) {
+    return handleApiError(err, "documents.GET");
   }
-  return NextResponse.json({ documents: rows });
 }
 
 export async function POST(req: NextRequest) {
-  if (!(await requireUnlocked())) {
-    return NextResponse.json({ error: "Locked" }, { status: 401 });
-  }
   try {
+    verifyCsrf(req);
+    await requireAdminSession();
+
     const formData = await req.formData();
     const file = formData.get("file");
-    const entityType = String(formData.get("entityType") || "insurance");
+    const entityTypeRaw = String(formData.get("entityType") || "insurance");
+    const entityType = ALLOWED_ENTITY_TYPES.has(entityTypeRaw)
+      ? entityTypeRaw
+      : "general";
     const entityId = Number(formData.get("entityId") || 0);
-    const title = String(formData.get("title") || "").trim();
+    const title = String(formData.get("title") || "").trim().slice(0, 180);
 
     if (!(file instanceof File)) {
-      return NextResponse.json({ error: "No file uploaded" }, { status: 400 });
+      throw new AppError("No file uploaded", 400, "NO_FILE");
     }
+
+    const validated = await validateUploadedFile(file, {
+      allowedExts: ALLOWED_DOCUMENT_EXTS,
+      maxBytes: MAX_DOCUMENT_BYTES,
+      checkImageDimensions: true,
+    });
 
     if (!fs.existsSync(paths.DOCS_DIR)) {
       fs.mkdirSync(paths.DOCS_DIR, { recursive: true });
     }
 
-    const ext = path.extname(file.name).replace(/[^a-zA-Z0-9.]/g, "").slice(0, 12);
-    const safeStoredName = `${Date.now()}_${crypto.randomUUID()}${ext}`;
-    const targetPath = path.join(paths.DOCS_DIR, safeStoredName);
-    const buf = Buffer.from(await file.arrayBuffer());
-    fs.writeFileSync(targetPath, buf);
+    const safeStoredName = `${Date.now()}_${crypto.randomUUID()}${validated.ext}`;
+    const targetPath = resolveContainedPath(paths.DOCS_DIR, safeStoredName);
+    fs.writeFileSync(targetPath, validated.buffer, { mode: 0o600 });
 
-    const inserted = db
-      .insert(documents)
-      .values({
-        entityType,
-        entityId: Number.isFinite(entityId) ? entityId : 0,
-        title: title || file.name,
-        originalName: file.name,
-        mimeType: file.type || "application/octet-stream",
-        sizeBytes: buf.length,
-        filePath: safeStoredName,
-        aiSummary: "",
-      })
-      .returning()
-      .get();
+    try {
+      const inserted = db
+        .insert(documents)
+        .values({
+          entityType,
+          entityId: Number.isFinite(entityId) && entityId >= 0 ? entityId : 0,
+          title: title || validated.originalName,
+          originalName: validated.originalName,
+          mimeType: validated.canonicalMime,
+          sizeBytes: validated.buffer.length,
+          filePath: safeStoredName,
+          sha256: validated.sha256,
+          aiSummary: "",
+        })
+        .returning()
+        .get();
 
-    return NextResponse.json({ document: inserted }, { status: 201 });
+      return NextResponse.json({ document: inserted }, { status: 201 });
+    } catch (dbErr) {
+      if (fs.existsSync(targetPath)) {
+        fs.unlinkSync(targetPath);
+      }
+      throw dbErr;
+    }
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Upload failed" },
-      { status: 500 }
-    );
+    return handleApiError(err, "documents.POST");
   }
 }
 
 export async function DELETE(req: NextRequest) {
-  if (!(await requireUnlocked())) {
-    return NextResponse.json({ error: "Locked" }, { status: 401 });
-  }
-  const id = Number(req.nextUrl.searchParams.get("id"));
-  if (!Number.isFinite(id)) {
-    return NextResponse.json({ error: "Invalid id" }, { status: 400 });
-  }
-  const doc = db
-    .select()
-    .from(documents)
-    .where(and(eq(documents.id, id)))
-    .get();
-  if (doc) {
-    const safeBase = path.basename(doc.filePath);
-    const fullPath = path.join(paths.DOCS_DIR, safeBase);
+  try {
+    verifyCsrf(req);
+    await requireAdminSession();
+
+    const id = Number(req.nextUrl.searchParams.get("id"));
+    if (!Number.isInteger(id) || id <= 0) {
+      throw new AppError("Invalid id", 400, "INVALID_ID");
+    }
+    const doc = db
+      .select()
+      .from(documents)
+      .where(eq(documents.id, id))
+      .get();
+    if (!doc) {
+      throw new AppError("Document not found", 404, "NOT_FOUND");
+    }
+
+    const fullPath = resolveContainedPath(paths.DOCS_DIR, doc.filePath);
+    db.delete(documents).where(eq(documents.id, id)).run();
     if (fs.existsSync(fullPath)) {
       fs.unlinkSync(fullPath);
     }
-    db.delete(documents).where(eq(documents.id, id)).run();
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    return handleApiError(err, "documents.DELETE");
   }
-  return NextResponse.json({ ok: true });
 }

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   Database,
   Download,
+  Lock,
   Play,
   ShieldAlert,
   Table2,
@@ -45,13 +46,14 @@ const PRESET_QUERIES = [
     sql: "SELECT p.name AS shop, rp.billing_month, rp.rent_amount, rp.solar_charge, rp.total_amount, rp.paid_date FROM rental_payments rp JOIN rental_properties p ON p.id = rp.property_id ORDER BY rp.billing_month DESC;",
   },
   {
-    label: "Loans & Insurance Docs",
+    label: "Loans Summary",
     sql: "SELECT l.name, l.status, l.current_balance, l.emi_amount FROM loans l;",
   },
 ];
 
 export default function SqlStudioPage() {
-  const [dbPath, setDbPath] = useState("");
+  const [dbName, setDbName] = useState("bps_income.db");
+  const [readOnlyEnforced, setReadOnlyEnforced] = useState(true);
   const [tables, setTables] = useState<TableInfo[]>([]);
   const [selectedTable, setSelectedTable] = useState<string>("");
   const [query, setQuery] = useState(PRESET_QUERIES[0].sql);
@@ -64,7 +66,8 @@ export default function SqlStudioPage() {
     const res = await fetch("/api/sql", { cache: "no-store" });
     if (res.ok) {
       const json = await res.json();
-      setDbPath(json.dbPath ?? "");
+      setDbName(json.dbName ?? "bps_income.db");
+      setReadOnlyEnforced(Boolean(json.readOnlyEnforced ?? true));
       setTables(json.tables ?? []);
     }
   }, []);
@@ -83,7 +86,10 @@ export default function SqlStudioPage() {
         const res = await fetch("/api/sql", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query: sql, allowWrite }),
+          body: JSON.stringify({
+            query: sql,
+            allowWrite: !readOnlyEnforced && allowWrite,
+          }),
         });
         const json = await res.json();
         if (!res.ok) {
@@ -99,7 +105,7 @@ export default function SqlStudioPage() {
         setRunning(false);
       }
     },
-    [query, allowWrite, loadSchema]
+    [query, allowWrite, readOnlyEnforced, loadSchema]
   );
 
   function previewTable(tableName: string) {
@@ -139,25 +145,36 @@ export default function SqlStudioPage() {
             SQL Studio
           </h1>
           <p className="text-xs text-slate-500 font-mono mt-0.5 truncate">
-            {dbPath || "./data/bps_income.db"}
+            {dbName}
           </p>
         </div>
 
-        <label className="inline-flex items-center gap-2 text-xs font-medium bg-white border border-slate-200 rounded-xl px-3 py-2 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={allowWrite}
-            onChange={(e) => setAllowWrite(e.target.checked)}
-          />
-          <ShieldAlert
-            className={`h-3.5 w-3.5 ${
-              allowWrite ? "text-rose-600" : "text-slate-400"
-            }`}
-          />
-          <span className={allowWrite ? "text-rose-700 font-semibold" : "text-slate-600"}>
-            Allow Writes (INSERT/UPDATE/DELETE)
-          </span>
-        </label>
+        {readOnlyEnforced ? (
+          <div className="inline-flex items-center gap-1.5 text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-xl px-3 py-2">
+            <Lock className="h-3.5 w-3.5" />
+            Read-Only Connection Enforced
+          </div>
+        ) : (
+          <label className="inline-flex items-center gap-2 text-xs font-medium bg-white border border-slate-200 rounded-xl px-3 py-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={allowWrite}
+              onChange={(e) => setAllowWrite(e.target.checked)}
+            />
+            <ShieldAlert
+              className={`h-3.5 w-3.5 ${
+                allowWrite ? "text-rose-600" : "text-slate-400"
+              }`}
+            />
+            <span
+              className={
+                allowWrite ? "text-rose-700 font-semibold" : "text-slate-600"
+              }
+            >
+              Allow Writes (Dev Mode)
+            </span>
+          </label>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-5">
@@ -210,7 +227,6 @@ export default function SqlStudioPage() {
 
         {/* Right: Query Editor & Results */}
         <div className="lg:col-span-3 space-y-4">
-          {/* Quick Presets */}
           <div className="flex flex-wrap gap-1.5">
             {PRESET_QUERIES.map((p) => (
               <button
@@ -227,7 +243,6 @@ export default function SqlStudioPage() {
             ))}
           </div>
 
-          {/* Editor Box */}
           <div className="rounded-2xl bg-slate-950 border border-slate-800 overflow-hidden shadow-sm">
             <div className="px-4 py-2 bg-slate-900 border-b border-slate-800 flex items-center justify-between text-xs text-slate-400">
               <span className="flex items-center gap-1.5 font-mono">
@@ -265,7 +280,6 @@ export default function SqlStudioPage() {
             </div>
           )}
 
-          {/* Results */}
           {result && (
             <div className="rounded-2xl bg-white border border-slate-200 overflow-hidden shadow-xs">
               <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between text-xs text-slate-600">
@@ -283,16 +297,18 @@ export default function SqlStudioPage() {
                     </span>
                   )}
                 </div>
-                {result.mode === "read" && result.rows && result.rows.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={downloadResultCsv}
-                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700"
-                  >
-                    <Download className="h-3.5 w-3.5" />
-                    Export CSV
-                  </button>
-                )}
+                {result.mode === "read" &&
+                  result.rows &&
+                  result.rows.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={downloadResultCsv}
+                      className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                      Export CSV
+                    </button>
+                  )}
               </div>
 
               {result.mode === "read" && result.columns && result.rows && (

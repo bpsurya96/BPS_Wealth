@@ -1,48 +1,59 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireUnlocked } from "@/lib/auth";
 import {
   askPersonalAssistant,
   buildPortfolioSnapshot,
   generateDeterministicInsights,
   getOllamaStatus,
 } from "@/lib/ai";
+import { requireAdminSession } from "@/lib/auth";
+import { verifyCsrf } from "@/lib/csrf";
 import { getEnvConfig } from "@/lib/env";
+import { handleApiError } from "@/lib/errors";
+import { aiChatSchema } from "@/lib/validation";
 
 export async function GET(req: NextRequest) {
-  if (!(await requireUnlocked())) {
-    return NextResponse.json({ error: "Locked" }, { status: 401 });
-  }
-  const scope = req.nextUrl.searchParams.get("scope") || "overview";
-  const cfg = getEnvConfig();
-  const snap = buildPortfolioSnapshot();
-  const insights = generateDeterministicInsights(snap, scope);
-  const ollama = await getOllamaStatus();
+  try {
+    await requireAdminSession();
+    const scope = req.nextUrl.searchParams.get("scope") || "overview";
+    const cfg = getEnvConfig();
+    const snap = buildPortfolioSnapshot();
+    const insights = generateDeterministicInsights(snap, scope);
+    const ollama = await getOllamaStatus();
 
-  return NextResponse.json({
-    activeProvider: cfg.activeProvider,
-    ollamaReachable: ollama.reachable,
-    installedModels: ollama.installedModels,
-    models: {
-      chat: cfg.ollamaChatModel,
-      planning: cfg.ollamaPlanningModel,
-      vision: cfg.ollamaVisionModel,
-      embed: cfg.ollamaEmbedModel,
-    },
-    insights,
-  });
+    return NextResponse.json({
+      activeProvider: cfg.activeProvider,
+      isRemoteAiEndpoint: cfg.isRemoteAiEndpoint,
+      ollamaReachable: ollama.reachable,
+      installedModels: ollama.installedModels,
+      models: {
+        chat: cfg.ollamaChatModel,
+        planning: cfg.ollamaPlanningModel,
+        vision: cfg.ollamaVisionModel,
+        embed: cfg.ollamaEmbedModel,
+      },
+      insights,
+    });
+  } catch (err) {
+    return handleApiError(err, "ai.GET");
+  }
 }
 
 export async function POST(req: NextRequest) {
-  if (!(await requireUnlocked())) {
-    return NextResponse.json({ error: "Locked" }, { status: 401 });
+  try {
+    verifyCsrf(req);
+    await requireAdminSession();
+    const parsed = aiChatSchema.parse(await req.json());
+    const result = await askPersonalAssistant(
+      parsed.prompt,
+      parsed.context,
+      parsed.mode,
+      {
+        allowRemoteEgress: parsed.allowRemoteEgress,
+        signal: req.signal,
+      }
+    );
+    return NextResponse.json(result);
+  } catch (err) {
+    return handleApiError(err, "ai.POST");
   }
-  const body = await req.json();
-  const prompt = String(body.prompt || "").trim();
-  const pageContext = String(body.context || "overview");
-  const mode = body.mode === "planning" ? "planning" : "chat";
-  if (!prompt) {
-    return NextResponse.json({ error: "Prompt is required" }, { status: 400 });
-  }
-  const result = await askPersonalAssistant(prompt, pageContext, mode);
-  return NextResponse.json(result);
 }
