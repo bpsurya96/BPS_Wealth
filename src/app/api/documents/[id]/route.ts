@@ -1,40 +1,65 @@
 import fs from "fs";
-import path from "path";
 import { NextRequest, NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import { db, paths } from "@/db";
 import { documents } from "@/db/schema";
-import { requireUnlocked } from "@/lib/auth";
+import { requireAdminSession } from "@/lib/auth";
+import { AppError, handleApiError } from "@/lib/errors";
+import {
+  resolveContainedPath,
+  sanitizeDisplayFilename,
+} from "@/lib/upload-security";
+
+const SAFE_INLINE_MIMES = new Set([
+  "application/pdf",
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+]);
 
 export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  if (!(await requireUnlocked())) {
-    return NextResponse.json({ error: "Locked" }, { status: 401 });
-  }
-  const { id } = await params;
-  const docId = Number(id);
-  const doc = db
-    .select()
-    .from(documents)
-    .where(eq(documents.id, docId))
-    .get();
-  if (!doc) {
-    return NextResponse.json({ error: "Document not found" }, { status: 404 });
-  }
+  try {
+    await requireAdminSession();
+    const { id } = await params;
+    const docId = Number(id);
+    if (!Number.isInteger(docId) || docId <= 0) {
+      throw new AppError("Invalid document id", 400, "INVALID_ID");
+    }
 
-  const safeBase = path.basename(doc.filePath);
-  const fullPath = path.join(paths.DOCS_DIR, safeBase);
-  if (!fs.existsSync(fullPath)) {
-    return NextResponse.json({ error: "File missing on disk" }, { status: 404 });
-  }
+    const doc = db
+      .select()
+      .from(documents)
+      .where(eq(documents.id, docId))
+      .get();
+    if (!doc) {
+      throw new AppError("Document not found", 404, "NOT_FOUND");
+    }
 
-  const buf = fs.readFileSync(fullPath);
-  return new NextResponse(new Uint8Array(buf), {
-    headers: {
-      "Content-Type": doc.mimeType || "application/octet-stream",
-      "Content-Disposition": `inline; filename="${doc.originalName.replace(/"/g, "")}"`,
-    },
-  });
+    const fullPath = resolveContainedPath(paths.DOCS_DIR, doc.filePath);
+    if (!fs.existsSync(fullPath)) {
+      throw new AppError("File missing on disk", 404, "FILE_MISSING");
+    }
+
+    const buf = fs.readFileSync(fullPath);
+    const safeName = sanitizeDisplayFilename(doc.originalName);
+    const isSafeInline = SAFE_INLINE_MIMES.has(doc.mimeType);
+    const disposition = isSafeInline ? "inline" : "attachment";
+
+    return new NextResponse(new Uint8Array(buf), {
+      headers: {
+        "Content-Type": isSafeInline
+          ? doc.mimeType
+          : "application/octet-stream",
+        "Content-Disposition": `${disposition}; filename="${safeName}"`,
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; sandbox",
+        "Cache-Control": "private, no-store",
+      },
+    });
+  } catch (err) {
+    return handleApiError(err, "documents.[id].GET");
+  }
 }

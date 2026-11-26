@@ -1,75 +1,221 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
+  checkPinRateLimit,
+  clearOwnerSetupTokenFile,
   clearPinSessionCookie,
   getSetting,
   hashPin,
+  invalidateAllSessions,
   isPinUnlocked,
+  recordPinFailure,
+  resetPinRateLimit,
   setPinSessionCookie,
   setSetting,
+  verifyOwnerSetupToken,
+  verifyPinHash,
 } from "@/lib/auth";
+import { verifyCsrf } from "@/lib/csrf";
+import { getEnvConfig } from "@/lib/env";
+import { AppError, handleApiError } from "@/lib/errors";
+import { logger } from "@/lib/logging";
+import { pinActionSchema } from "@/lib/validation";
+
+function getClientBucket(req: NextRequest): string {
+  const fwd = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+  const realIp = req.headers.get("x-real-ip")?.trim();
+  const ip = fwd || realIp || "local";
+  return `pin:${ip}`;
+}
 
 export async function GET() {
-  const status = await isPinUnlocked();
-  return NextResponse.json(status);
+  try {
+    const status = await isPinUnlocked();
+    return NextResponse.json({
+      pinEnabled: status.pinEnabled,
+      setupRequired: status.setupRequired,
+      unlocked: status.unlocked,
+      isProduction: status.isProduction,
+    });
+  } catch (err) {
+    return handleApiError(err, "auth.pin.GET");
+  }
 }
 
 export async function POST(req: NextRequest) {
   try {
+    verifyCsrf(req);
     const body = await req.json();
-    const action = body.action as string;
+    const parsed = pinActionSchema.parse(body);
+    const clientKey = getClientBucket(req);
+    const cfg = getEnvConfig();
 
-    if (action === "verify") {
-      const pin = String(body.pin ?? "").trim();
-      const stored = getSetting("pin_hash", "");
-      if (!stored || hashPin(pin) !== stored) {
-        return NextResponse.json(
-          { error: "Invalid PIN" },
-          { status: 401 }
-        );
-      }
-      await setPinSessionCookie(stored);
-      return NextResponse.json({ unlocked: true });
-    }
-
-    if (action === "lock") {
+    if (parsed.action === "lock") {
       await clearPinSessionCookie();
       return NextResponse.json({ unlocked: false });
     }
 
-    if (action === "set") {
-      const { unlocked } = await isPinUnlocked();
-      if (!unlocked) {
-        return NextResponse.json({ error: "Locked" }, { status: 401 });
-      }
-      const pin = String(body.pin ?? "").trim();
-      if (!/^\d{4,8}$/.test(pin)) {
+    if (parsed.action === "verify") {
+      const rate = checkPinRateLimit(clientKey);
+      if (!rate.allowed) {
         return NextResponse.json(
-          { error: "PIN must be 4 to 8 digits" },
-          { status: 400 }
+          {
+            error: `Too many failed PIN attempts. Try again in ${rate.retryAfterSeconds}s.`,
+            retryAfterSeconds: rate.retryAfterSeconds,
+          },
+          {
+            status: 429,
+            headers: { "Retry-After": String(rate.retryAfterSeconds) },
+          }
         );
       }
-      const hashed = hashPin(pin);
-      setSetting("pin_hash", hashed);
-      setSetting("pin_enabled", "true");
-      await setPinSessionCookie(hashed);
-      return NextResponse.json({ pinEnabled: true, unlocked: true });
+
+      const stored = getSetting("pin_hash", "");
+      const ok = await verifyPinHash(stored, parsed.pin);
+      if (!ok) {
+        const failure = recordPinFailure(clientKey);
+        logger.warn("pin_verify_failed", {
+          attempts: failure.failedAttempts,
+          retryAfterSeconds: failure.retryAfterSeconds,
+        });
+        return NextResponse.json(
+          {
+            error:
+              failure.retryAfterSeconds > 0
+                ? `Invalid PIN. Locked for ${failure.retryAfterSeconds}s.`
+                : "Invalid PIN",
+            retryAfterSeconds: failure.retryAfterSeconds,
+          },
+          { status: 401 }
+        );
+      }
+
+      resetPinRateLimit(clientKey);
+      await setPinSessionCookie();
+      return NextResponse.json({ unlocked: true, setupRequired: false });
     }
 
-    if (action === "disable") {
-      const { unlocked } = await isPinUnlocked();
-      if (!unlocked) {
-        return NextResponse.json({ error: "Locked" }, { status: 401 });
+    if (parsed.action === "setup") {
+      const rate = checkPinRateLimit(`setup:${clientKey}`);
+      if (!rate.allowed) {
+        return NextResponse.json(
+          {
+            error: `Too many failed setup attempts. Try again in ${rate.retryAfterSeconds}s.`,
+          },
+          {
+            status: 429,
+            headers: { "Retry-After": String(rate.retryAfterSeconds) },
+          }
+        );
       }
+
+      const existingHash = getSetting("pin_hash", "");
+      if (existingHash.startsWith("$argon2id$")) {
+        throw new AppError(
+          "Owner PIN is already initialized",
+          409,
+          "ALREADY_INITIALIZED"
+        );
+      }
+
+      if (!verifyOwnerSetupToken(parsed.setupToken)) {
+        recordPinFailure(`setup:${clientKey}`);
+        logger.warn("owner_setup_invalid_token", {});
+        throw new AppError("Invalid owner setup token", 403, "INVALID_SETUP_TOKEN");
+      }
+
+      resetPinRateLimit(`setup:${clientKey}`);
+      const hashed = await hashPin(parsed.pin);
+      setSetting("pin_hash", hashed);
+      setSetting("pin_enabled", "true");
+      clearOwnerSetupTokenFile();
+      await setPinSessionCookie();
+      logger.info("owner_setup_completed", {});
+      return NextResponse.json({
+        pinEnabled: true,
+        setupRequired: false,
+        unlocked: true,
+      });
+    }
+
+    if (parsed.action === "set") {
+      const status = await isPinUnlocked();
+      if (!status.unlocked) {
+        throw new AppError("Locked", 401, "LOCKED");
+      }
+
+      const existingHash = getSetting("pin_hash", "");
+      if (existingHash.startsWith("$argon2id$")) {
+        if (!parsed.currentPin) {
+          throw new AppError(
+            "Current PIN is required to update PIN",
+            400,
+            "CURRENT_PIN_REQUIRED"
+          );
+        }
+        const matches = await verifyPinHash(existingHash, parsed.currentPin);
+        if (!matches) {
+          throw new AppError(
+            "Current PIN is incorrect",
+            401,
+            "INVALID_CURRENT_PIN"
+          );
+        }
+      }
+
+      const hashed = await hashPin(parsed.pin);
+      invalidateAllSessions();
+      setSetting("pin_hash", hashed);
+      setSetting("pin_enabled", "true");
+      clearOwnerSetupTokenFile();
+      await setPinSessionCookie();
+      logger.info("pin_updated", {});
+      return NextResponse.json({
+        pinEnabled: true,
+        setupRequired: false,
+        unlocked: true,
+      });
+    }
+
+    if (parsed.action === "disable") {
+      if (cfg.isProduction || cfg.requireAuthInDev) {
+        throw new AppError(
+          "PIN authentication cannot be disabled in production",
+          403,
+          "PIN_REQUIRED_IN_PROD"
+        );
+      }
+      const status = await isPinUnlocked();
+      if (!status.unlocked) {
+        throw new AppError("Locked", 401, "LOCKED");
+      }
+      const existingHash = getSetting("pin_hash", "");
+      if (existingHash.startsWith("$argon2id$")) {
+        if (!parsed.currentPin) {
+          throw new AppError(
+            "Current PIN is required to disable PIN lock",
+            400,
+            "CURRENT_PIN_REQUIRED"
+          );
+        }
+        const matches = await verifyPinHash(existingHash, parsed.currentPin);
+        if (!matches) {
+          throw new AppError(
+            "Current PIN is incorrect",
+            401,
+            "INVALID_CURRENT_PIN"
+          );
+        }
+      }
+
+      invalidateAllSessions();
       setSetting("pin_enabled", "false");
+      setSetting("pin_hash", "");
       await clearPinSessionCookie();
       return NextResponse.json({ pinEnabled: false, unlocked: true });
     }
 
-    return NextResponse.json({ error: "Unknown action" }, { status: 400 });
+    throw new AppError("Unknown auth action", 400, "UNKNOWN_ACTION");
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Auth error" },
-      { status: 500 }
-    );
+    return handleApiError(err, "auth.pin.POST");
   }
 }

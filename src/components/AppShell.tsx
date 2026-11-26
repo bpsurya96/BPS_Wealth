@@ -37,8 +37,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [authState, setAuthState] = useState<{
     checked: boolean;
     pinEnabled: boolean;
+    setupRequired: boolean;
     unlocked: boolean;
-  }>({ checked: false, pinEnabled: false, unlocked: true });
+  }>({ checked: false, pinEnabled: true, setupRequired: false, unlocked: false });
   const [mobileOpen, setMobileOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
 
@@ -58,14 +59,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         setAuthState({
           checked: true,
           pinEnabled: Boolean(data.pinEnabled),
+          setupRequired: Boolean(data.setupRequired),
           unlocked: Boolean(data.unlocked),
         });
         return;
       }
     } catch {
-      // fallback
+      // fail closed on network/server error
     }
-    setAuthState({ checked: true, pinEnabled: false, unlocked: true });
+    setAuthState({
+      checked: true,
+      pinEnabled: true,
+      setupRequired: false,
+      unlocked: false,
+    });
   }, []);
 
   useEffect(() => {
@@ -89,11 +96,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     );
   }
 
-  if (authState.pinEnabled && !authState.unlocked) {
+  if ((authState.pinEnabled || authState.setupRequired) && !authState.unlocked) {
     return (
       <PinGate
+        setupRequired={authState.setupRequired}
         onUnlocked={() => {
-          setAuthState((prev) => ({ ...prev, unlocked: true }));
+          setAuthState((prev) => ({
+            ...prev,
+            pinEnabled: true,
+            setupRequired: false,
+            unlocked: true,
+          }));
         }}
       />
     );
@@ -152,7 +165,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
         </div>
 
-        <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
+        <nav className="flex-1 p-3 space-y-1 overflow-y-auto" aria-label="Primary">
           {NAV_ITEMS.map((item) => {
             const Icon = item.icon;
             const active =

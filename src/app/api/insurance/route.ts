@@ -2,49 +2,74 @@ import { NextRequest, NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { insurancePolicies } from "@/db/schema";
-import { requireUnlocked } from "@/lib/auth";
+import { requireAdminSession } from "@/lib/auth";
+import { verifyCsrf } from "@/lib/csrf";
+import { toMinorUnits } from "@/lib/currency";
+import { AppError, handleApiError } from "@/lib/errors";
+import { normalizeAnnualInsurancePremium } from "@/lib/finance";
+import { createInsuranceSchema } from "@/lib/validation";
 
 export async function GET() {
-  if (!(await requireUnlocked())) {
-    return NextResponse.json({ error: "Locked" }, { status: 401 });
+  try {
+    await requireAdminSession();
+    const policies = db
+      .select()
+      .from(insurancePolicies)
+      .all()
+      .map((p) => ({
+        ...p,
+        annualizedPremium: normalizeAnnualInsurancePremium(
+          p.premiumAmount,
+          p.premiumFrequency
+        ),
+      }));
+    return NextResponse.json({ policies });
+  } catch (err) {
+    return handleApiError(err, "insurance.GET");
   }
-  const policies = db.select().from(insurancePolicies).all();
-  return NextResponse.json({ policies });
 }
 
 export async function POST(req: NextRequest) {
-  if (!(await requireUnlocked())) {
-    return NextResponse.json({ error: "Locked" }, { status: 401 });
+  try {
+    verifyCsrf(req);
+    await requireAdminSession();
+    const parsed = createInsuranceSchema.parse(await req.json());
+
+    const inserted = db
+      .insert(insurancePolicies)
+      .values({
+        name: parsed.name,
+        policyType: parsed.policyType,
+        provider: parsed.provider,
+        premiumAmount: parsed.premiumAmount,
+        premiumMinor: toMinorUnits(parsed.premiumAmount),
+        premiumFrequency: parsed.premiumFrequency,
+        coverAmount: parsed.coverAmount,
+        startDate: parsed.startDate,
+        expiryDate: parsed.expiryDate,
+        maturityDate: parsed.maturityDate,
+        status: parsed.status,
+        notes: parsed.notes,
+      })
+      .returning()
+      .get();
+    return NextResponse.json({ policy: inserted }, { status: 201 });
+  } catch (err) {
+    return handleApiError(err, "insurance.POST");
   }
-  const body = await req.json();
-  const inserted = db
-    .insert(insurancePolicies)
-    .values({
-      name: String(body.name || "Policy"),
-      policyType: String(body.policyType || "term"),
-      provider: String(body.provider || ""),
-      premiumAmount: Number(body.premiumAmount || 0),
-      premiumFrequency: String(body.premiumFrequency || "annual"),
-      coverAmount: String(body.coverAmount || ""),
-      startDate: String(body.startDate || ""),
-      expiryDate: String(body.expiryDate || ""),
-      maturityDate: String(body.maturityDate || ""),
-      status: String(body.status || "active"),
-      notes: String(body.notes || ""),
-    })
-    .returning()
-    .get();
-  return NextResponse.json({ policy: inserted }, { status: 201 });
 }
 
 export async function DELETE(req: NextRequest) {
-  if (!(await requireUnlocked())) {
-    return NextResponse.json({ error: "Locked" }, { status: 401 });
+  try {
+    verifyCsrf(req);
+    await requireAdminSession();
+    const id = Number(req.nextUrl.searchParams.get("id"));
+    if (!Number.isInteger(id) || id <= 0) {
+      throw new AppError("Invalid id", 400, "INVALID_ID");
+    }
+    db.delete(insurancePolicies).where(eq(insurancePolicies.id, id)).run();
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    return handleApiError(err, "insurance.DELETE");
   }
-  const id = Number(req.nextUrl.searchParams.get("id"));
-  if (!Number.isFinite(id)) {
-    return NextResponse.json({ error: "Invalid id" }, { status: 400 });
-  }
-  db.delete(insurancePolicies).where(eq(insurancePolicies.id, id)).run();
-  return NextResponse.json({ ok: true });
 }

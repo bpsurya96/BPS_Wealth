@@ -1,0 +1,58 @@
+services:
+  bps-wealth:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bps-wealth
+    restart: unless-stopped
+    # Single instance only (SQLite requires single-writer host volume)
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      NODE_ENV: production
+      BPS_DB_PATH: /app/data/bps_income.db
+      BPS_DOCS_DIR: /app/data/documents
+      BPS_BACKUPS_DIR: /app/data/backups
+      BPS_PIN_SECRET: ${BPS_PIN_SECRET:?BPS_PIN_SECRET must be set (>= 32 random chars)}
+      BPS_OWNER_SETUP_TOKEN: ${BPS_OWNER_SETUP_TOKEN:-}
+      BPS_COOKIE_SECURE: ${BPS_COOKIE_SECURE:-true}
+      APP_ORIGIN: ${APP_ORIGIN:-}
+      AI_PROVIDER: ${AI_PROVIDER:-ollama}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      SQL_STUDIO_ENABLED: ${SQL_STUDIO_ENABLED:-true}
+      SQL_STUDIO_ALLOW_WRITES: "false"
+    volumes:
+      - bps_data:/app/data
+    networks:
+      - internal
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # Private local Ollama container (not published on public ports)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: bps-ollama
+    restart: unless-stopped
+    profiles: ["with-ollama"]
+    volumes:
+      - ollama_models:/root/.ollama
+    networks:
+      - internal
+
+volumes:
+  bps_data:
+  ollama_models:
+
+networks:
+  internal:
+    driver: bridge

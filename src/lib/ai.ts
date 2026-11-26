@@ -1,25 +1,33 @@
-import { desc } from "drizzle-orm";
-import { db } from "@/db";
-import {
-  documents,
-  financialGoals,
-  incomeEntries,
-  insurancePolicies,
-  investmentHoldings,
-  investmentTransactions,
-  loans,
-  rentalPayments,
-  rentalProperties,
-} from "@/db/schema";
-import { getSetting } from "./auth";
+import { ZodSchema } from "zod";
 import { getEnvConfig } from "./env";
-import { calculateXIRR, holdingInrValues } from "./finance";
+import { AppError } from "./errors";
+import { logger } from "./logging";
+import {
+  aiExtractedIncomeSchema,
+  aiExtractedInsuranceSchema,
+  aiExtractedInvestmentSchema,
+  aiExtractedLoanSchema,
+  aiExtractedReceiptOrBankSchema,
+} from "./validation";
+import { getDashboardPortfolioData } from "./../services/portfolio";
 import { formatCompactINR, formatINR, formatPercent } from "./utils";
+
+export type ExtractionTargetType =
+  | "insurance"
+  | "investment"
+  | "income"
+  | "loan"
+  | "receipt"
+  | "bank_statement"
+  | "financial_document";
 
 export interface PortfolioSnapshot {
   usdInrRate: number;
   netWorthInr: number;
+  totalAssetsInr: number;
   totalPortfolioInr: number;
+  otherFinancialAssetsInr: number;
+  physicalAssetsInr: number;
   totalInvestedInr: number;
   totalGainInr: number;
   portfolioXirr: number | null;
@@ -28,7 +36,11 @@ export interface PortfolioSnapshot {
   emergencyInvestedInr: number;
   emergencyTargetInr: number;
   mainIncomeTotal: number;
+  rentalIncomeTotal: number;
+  dividendIncomeTotal: number;
+  otherIncomeTotal: number;
   passiveIncomeTotal: number;
+  totalAnnualInsurancePremiumInr: number;
   holdingsSummary: Array<{
     name: string;
     assetClass: string;
@@ -47,6 +59,8 @@ export interface PortfolioSnapshot {
     name: string;
     policyType: string;
     premiumAmount: number;
+    premiumFrequency: string;
+    annualizedPremium: number;
     coverAmount: string | null;
     expiryDate: string | null;
     docCount: number;
@@ -59,147 +73,120 @@ export interface PortfolioSnapshot {
 }
 
 export function buildPortfolioSnapshot(): PortfolioSnapshot {
-  const usdInrRate = Number.parseFloat(getSetting("usd_inr_rate", "84.5"));
-  const emergencyTargetInr = Number.parseFloat(
-    getSetting("emergency_fund_target", "600000")
-  );
-  const holdings = db.select().from(investmentHoldings).all();
-  const txns = db.select().from(investmentTransactions).all();
-  const incomes = db
-    .select()
-    .from(incomeEntries)
-    .orderBy(desc(incomeEntries.date))
-    .all();
-  const rentPays = db.select().from(rentalPayments).all();
-  const rentals = db.select().from(rentalProperties).all();
-  const allLoans = db.select().from(loans).all();
-  const policies = db.select().from(insurancePolicies).all();
-  const goals = db.select().from(financialGoals).all();
-  const docs = db.select().from(documents).all();
-
-  const txnsByHolding = new Map<number, typeof txns>();
-  for (const t of txns) {
-    const arr = txnsByHolding.get(t.holdingId) ?? [];
-    arr.push(t);
-    txnsByHolding.set(t.holdingId, arr);
-  }
-
-  let totalInvestedInr = 0;
-  let totalPortfolioInr = 0;
-  let totalPlannedSipInr = 0;
-  let emergencyInvestedInr = 0;
-  const allCashflows: Array<{ date: string; amount: number }> = [];
-
-  const holdingsSummary = holdings
-    .filter((h) => h.status !== "closed")
-    .map((h) => {
-      const vals = holdingInrValues(h, usdInrRate);
-      totalInvestedInr += vals.investedInr;
-      totalPortfolioInr += vals.currentInr;
-      totalPlannedSipInr += vals.plannedSipInr;
-      if (h.isEmergencyFund || h.assetClass === "fd" || h.assetClass === "rd") {
-        emergencyInvestedInr += vals.currentInr;
-      }
-
-      const hTxns = txnsByHolding.get(h.id) ?? [];
-      const hCfs = hTxns.map((t) => ({
-        date: t.date,
-        amount:
-          t.type === "sell" || t.type === "dividend"
-            ? Math.abs(t.amount)
-            : -Math.abs(t.amount),
-      }));
-      const nativeCurrent =
-        h.units > 0 && h.currentNav > 0
-          ? h.units * h.currentNav
-          : h.currentValue;
-      if (nativeCurrent > 0 && hCfs.length > 0) {
-        hCfs.push({
-          date: new Date().toISOString().slice(0, 10),
-          amount: nativeCurrent,
-        });
-      }
-      for (const t of hTxns) {
-        const fx = t.currency === "USD" ? usdInrRate : 1;
-        allCashflows.push({
-          date: t.date,
-          amount:
-            t.type === "sell" || t.type === "dividend"
-              ? Math.abs(t.amount) * fx
-              : -Math.abs(t.amount) * fx,
-        });
-      }
-      return {
-        name: h.name,
-        assetClass: h.assetClass,
-        investedInr: Math.round(vals.investedInr),
-        currentInr: Math.round(vals.currentInr),
-        plannedSipInr: Math.round(vals.plannedSipInr),
-        xirr: calculateXIRR(hCfs),
-      };
-    });
-
-  if (totalPortfolioInr > 0 && allCashflows.length > 0) {
-    allCashflows.push({
-      date: new Date().toISOString().slice(0, 10),
-      amount: totalPortfolioInr,
-    });
-  }
-
-  const totalLiabilitiesInr = allLoans
-    .filter((l) => l.status === "active")
-    .reduce((s, l) => s + l.currentBalance, 0);
-
-  const mainIncomeTotal = incomes
-    .filter((i) => i.category === "salary")
-    .reduce((s, i) => s + i.inhandAmount, 0);
-  const passiveIncomeTotal =
-    incomes
-      .filter((i) => i.category !== "salary")
-      .reduce((s, i) => s + i.inhandAmount, 0) +
-    rentPays.reduce((s, rp) => s + rp.rentAmount, 0) +
-    (rentPays.length === 0
-      ? rentals
-          .filter((r) => r.status === "occupied")
-          .reduce((s, r) => s + r.monthlyRent, 0)
-      : 0);
+  const dash = getDashboardPortfolioData();
+  const m = dash.metrics;
 
   return {
-    usdInrRate,
-    netWorthInr: totalPortfolioInr - totalLiabilitiesInr,
-    totalPortfolioInr,
-    totalInvestedInr,
-    totalGainInr: totalPortfolioInr - totalInvestedInr,
-    portfolioXirr: calculateXIRR(allCashflows),
-    totalLiabilitiesInr,
-    totalPlannedSipInr,
-    emergencyInvestedInr,
-    emergencyTargetInr,
-    mainIncomeTotal,
-    passiveIncomeTotal,
-    holdingsSummary,
-    loansSummary: allLoans.map((l) => ({
+    usdInrRate: dash.usdInrRate,
+    netWorthInr: m.netWorthInr,
+    totalAssetsInr: m.totalAssetsInr,
+    totalPortfolioInr: m.totalPortfolioInr,
+    otherFinancialAssetsInr: m.otherFinancialAssetsInr,
+    physicalAssetsInr: m.physicalAssetsInr,
+    totalInvestedInr: m.totalInvestedInr,
+    totalGainInr: m.totalGainInr,
+    portfolioXirr: m.portfolioXirr,
+    totalLiabilitiesInr: m.totalLiabilitiesInr,
+    totalPlannedSipInr: m.totalPlannedSipInr,
+    emergencyInvestedInr: m.emergencyInvestedInr,
+    emergencyTargetInr: m.emergencyTargetInr,
+    mainIncomeTotal: m.mainIncomeTotal,
+    rentalIncomeTotal: m.rentalIncomeTotal,
+    dividendIncomeTotal: m.dividendIncomeTotal,
+    otherIncomeTotal: m.otherIncomeTotal,
+    passiveIncomeTotal: m.passiveIncomeTotal,
+    totalAnnualInsurancePremiumInr: m.totalAnnualInsurancePremiumInr,
+    holdingsSummary: dash.holdingsSummary,
+    loansSummary: dash.loansList.map((l) => ({
       name: l.name,
       status: l.status,
       currentBalance: l.currentBalance,
       emiAmount: l.emiAmount,
     })),
-    policiesSummary: policies.map((p) => ({
+    policiesSummary: dash.policiesList.map((p) => ({
       name: p.name,
       policyType: p.policyType,
       premiumAmount: p.premiumAmount,
+      premiumFrequency: p.premiumFrequency,
+      annualizedPremium: p.annualizedPremium,
       coverAmount: p.coverAmount,
       expiryDate: p.expiryDate,
-      docCount: docs.filter(
-        (d) => d.entityType === "insurance" && d.entityId === p.id
-      ).length,
+      docCount: p.docCount,
     })),
-    goalsSummary: goals.map((g) => ({
+    goalsSummary: dash.goals.map((g) => ({
       name: g.name,
       targetAmount: g.targetAmount,
       currentAmount: g.currentAmount,
     })),
   };
+}
+
+/**
+ * Strips potentially identifying free-text names before transmitting to a remote AI endpoint.
+ */
+function buildMinimizedSnapshot(snap: PortfolioSnapshot, minimizePii: boolean) {
+  if (!minimizePii) return snap;
+  return {
+    ...snap,
+    holdingsSummary: snap.holdingsSummary.map((h, i) => ({
+      ...h,
+      name: `Holding_${i + 1} (${h.assetClass})`,
+    })),
+    loansSummary: snap.loansSummary.map((l, i) => ({
+      ...l,
+      name: `Loan_${i + 1}`,
+    })),
+    policiesSummary: snap.policiesSummary.map((p, i) => ({
+      ...p,
+      name: `Policy_${i + 1}`,
+    })),
+    goalsSummary: snap.goalsSummary.map((g, i) => ({
+      ...g,
+      name: `Goal_${i + 1}`,
+    })),
+  };
+}
+
+async function fetchWithTimeoutAndRetry(
+  url: string,
+  init: RequestInit,
+  options: { timeoutMs: number; maxRetries: number; externalSignal?: AbortSignal }
+): Promise<Response> {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt <= options.maxRetries; attempt++) {
+    if (options.externalSignal?.aborted) {
+      throw new AppError("AI request cancelled", 499, "REQUEST_ABORTED");
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), options.timeoutMs);
+    const onExternalAbort = () => controller.abort();
+    options.externalSignal?.addEventListener("abort", onExternalAbort, {
+      once: true,
+    });
+
+    try {
+      const res = await fetch(url, {
+        ...init,
+        signal: controller.signal,
+        cache: "no-store",
+      });
+      if (res.ok || (res.status >= 400 && res.status < 500)) {
+        return res;
+      }
+      lastError = new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      lastError = err;
+      if (options.externalSignal?.aborted) {
+        throw new AppError("AI request cancelled", 499, "REQUEST_ABORTED");
+      }
+    } finally {
+      clearTimeout(timer);
+      options.externalSignal?.removeEventListener("abort", onExternalAbort);
+    }
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("AI request failed after retries");
 }
 
 export async function getOllamaStatus(): Promise<{
@@ -208,13 +195,11 @@ export async function getOllamaStatus(): Promise<{
 }> {
   const cfg = getEnvConfig();
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2000);
-    const res = await fetch(`${cfg.ollamaBaseUrl}/api/tags`, {
-      signal: controller.signal,
-      cache: "no-store",
-    });
-    clearTimeout(timeout);
+    const res = await fetchWithTimeoutAndRetry(
+      `${cfg.ollamaBaseUrl}/api/tags`,
+      {},
+      { timeoutMs: 2500, maxRetries: 0 }
+    );
     if (!res.ok) return { reachable: false, installedModels: [] };
     const json = await res.json();
     const installedModels = Array.isArray(json?.models)
@@ -234,7 +219,7 @@ export function generateDeterministicInsights(
 
   if (snap.holdingsSummary.length === 0) {
     insights.push(
-      "Your database is ready! Upload your Excel sheet in Import & Backup, use SQL Studio to inspect tables, or extract receipts with Open-Source Vision AI."
+      "Your database is ready! Upload your Excel/CSV sheet in Import & Backup, add holdings, or extract receipts with Vision AI."
     );
     return insights;
   }
@@ -345,7 +330,11 @@ function buildLocalFallbackReply(
   ) {
     lines.push(`Main Income (Salary): ${formatINR(snap.mainIncomeTotal)}`);
     lines.push(
-      `Passive Income (Rent & Other): ${formatINR(snap.passiveIncomeTotal)}`
+      `Passive Income: ${formatINR(snap.passiveIncomeTotal)} (Rental: ${formatINR(
+        snap.rentalIncomeTotal
+      )}, Dividends: ${formatINR(snap.dividendIncomeTotal)}, Other: ${formatINR(
+        snap.otherIncomeTotal
+      )})`
     );
   } else if (
     q.includes("loan") ||
@@ -359,18 +348,25 @@ function buildLocalFallbackReply(
         `• ${l.name} [${l.status}]: Balance ${formatINR(l.currentBalance)}`
       );
     }
+    lines.push(
+      `Total Annualized Insurance Premiums: ${formatINR(
+        snap.totalAnnualInsurancePremiumInr
+      )}/yr`
+    );
     for (const p of snap.policiesSummary) {
       lines.push(
-        `• ${p.name} (${p.policyType}): Premium ${formatINR(
-          p.premiumAmount
-        )}, Docs uploaded: ${p.docCount}`
+        `• ${p.name} (${p.policyType}): ${formatINR(p.premiumAmount)} / ${
+          p.premiumFrequency
+        }, Docs: ${p.docCount}`
       );
     }
   } else {
     lines.push(
-      `Net Worth: ${formatINR(snap.netWorthInr)} (Assets ${formatCompactINR(
-        snap.totalPortfolioInr
-      )} - Liabilities ${formatCompactINR(snap.totalLiabilitiesInr)}).`
+      `Net Worth: ${formatINR(snap.netWorthInr)} (Total Assets ${formatCompactINR(
+        snap.totalAssetsInr
+      )} [Portfolio ${formatCompactINR(snap.totalPortfolioInr)}] - Liabilities ${formatCompactINR(
+        snap.totalLiabilitiesInr
+      )}).`
     );
     lines.push(...generateDeterministicInsights(snap, "overview"));
   }
@@ -384,13 +380,23 @@ function buildLocalFallbackReply(
 export async function askPersonalAssistant(
   prompt: string,
   pageContext = "overview",
-  mode: "chat" | "planning" = "chat"
+  mode: "chat" | "planning" = "chat",
+  options?: { allowRemoteEgress?: boolean; signal?: AbortSignal }
 ): Promise<{
   reply: string;
   provider: string;
+  isRemote: boolean;
 }> {
   const cfg = getEnvConfig();
   const snap = buildPortfolioSnapshot();
+
+  if (cfg.isRemoteAiEndpoint && !options?.allowRemoteEgress) {
+    throw new AppError(
+      "Configured AI endpoint is remote. Confirm remote data sharing before sending portfolio data.",
+      409,
+      "REMOTE_AI_CONFIRMATION_REQUIRED"
+    );
+  }
 
   const isPlanning =
     mode === "planning" ||
@@ -399,85 +405,116 @@ export async function askPersonalAssistant(
     ? cfg.ollamaPlanningModel
     : cfg.ollamaChatModel;
 
-  const systemPrompt = `You are BPS Personal Wealth Assistant, running 100% locally on open-source AI inside the user's Income & Investment Tracker.
-Always base numbers strictly on the live portfolio JSON below. Use Indian Rupee formatting (₹, Lakhs, Crores). Do not invent figures.
+  const safeSnap = buildMinimizedSnapshot(snap, cfg.isRemoteAiEndpoint);
+
+  const systemPrompt = `You are BPS Personal Wealth Assistant inside the user's Wealth Tracker.
+Always base numbers strictly on the live portfolio JSON below. Use Indian Rupee formatting (₹, Lakhs, Crores). Do not invent figures; if data is missing, state that it is unknown.
 Current page context: ${pageContext}
 
 LIVE PORTFOLIO SNAPSHOT:
-${JSON.stringify(snap, null, 2)}`;
+${JSON.stringify(safeSnap, null, 2)}`;
 
   if (cfg.activeProvider === "ollama") {
     try {
-      const res = await fetch(`${cfg.ollamaBaseUrl}/api/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: selectedOllamaModel,
-          stream: false,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: prompt },
-          ],
-        }),
-      });
+      const res = await fetchWithTimeoutAndRetry(
+        `${cfg.ollamaBaseUrl}/api/chat`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: selectedOllamaModel,
+            stream: false,
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: prompt },
+            ],
+          }),
+        },
+        {
+          timeoutMs: cfg.aiTimeoutMs,
+          maxRetries: 1,
+          externalSignal: options?.signal,
+        }
+      );
       if (res.ok) {
         const json = await res.json();
         const text = json?.message?.content;
-        if (text) {
+        if (typeof text === "string" && text.trim()) {
           return {
             reply: text,
             provider: `Ollama (${selectedOllamaModel})`,
+            isRemote: cfg.isRemoteAiEndpoint,
           };
         }
       }
       const errJson = await res.json().catch(() => ({}));
       const ollamaMsg = errJson?.error
-        ? `Ollama model "${selectedOllamaModel}" not pulled yet — run: ollama pull ${selectedOllamaModel}`
+        ? `Ollama model "${selectedOllamaModel}" unavailable`
         : `Ollama could not respond for ${selectedOllamaModel}`;
       return {
         reply: buildLocalFallbackReply(prompt, snap, ollamaMsg),
         provider: "Local Deterministic Copilot",
+        isRemote: false,
       };
-    } catch {
+    } catch (err) {
+      if (err instanceof AppError && err.status === 499) throw err;
+      logger.warn("ai_ollama_fallback", {
+        reason: err instanceof Error ? err.message : "unreachable",
+      });
       return {
         reply: buildLocalFallbackReply(
           prompt,
           snap,
-          `Ollama not reachable at ${cfg.ollamaBaseUrl} — run: ollama serve & ollama pull ${selectedOllamaModel}`
+          `Ollama not reachable at configured endpoint`
         ),
         provider: "Local Deterministic Copilot",
+        isRemote: false,
       };
     }
   }
 
   if (cfg.activeProvider === "oss_openai") {
     try {
-      const res = await fetch(`${cfg.ossBaseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${cfg.ossApiKey}`,
+      const res = await fetchWithTimeoutAndRetry(
+        `${cfg.ossBaseUrl}/chat/completions`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(cfg.ossApiKey
+              ? { Authorization: `Bearer ${cfg.ossApiKey}` }
+              : {}),
+          },
+          body: JSON.stringify({
+            model: cfg.ossModel,
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: prompt },
+            ],
+          }),
         },
-        body: JSON.stringify({
-          model: cfg.ossModel,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: prompt },
-          ],
-        }),
-      });
+        {
+          timeoutMs: cfg.aiTimeoutMs,
+          maxRetries: 1,
+          externalSignal: options?.signal,
+        }
+      );
       if (res.ok) {
         const json = await res.json();
         const text = json?.choices?.[0]?.message?.content;
-        if (text) {
+        if (typeof text === "string" && text.trim()) {
           return {
             reply: text,
             provider: `Open-Source Endpoint (${cfg.ossModel})`,
+            isRemote: cfg.isRemoteAiEndpoint,
           };
         }
       }
-    } catch {
-      // fall through
+    } catch (err) {
+      if (err instanceof AppError && err.status === 499) throw err;
+      logger.warn("ai_oss_openai_fallback", {
+        reason: err instanceof Error ? err.message : "unreachable",
+      });
     }
   }
 
@@ -485,39 +522,74 @@ ${JSON.stringify(snap, null, 2)}`;
     reply: buildLocalFallbackReply(
       prompt,
       snap,
-      `Local Copilot mode (Ollama model: ${selectedOllamaModel})`
+      `Local Copilot mode`
     ),
     provider: "Local Deterministic Copilot",
+    isRemote: false,
   };
 }
 
+const EXTRACTION_SCHEMAS: Record<ExtractionTargetType, ZodSchema> = {
+  insurance: aiExtractedInsuranceSchema,
+  investment: aiExtractedInvestmentSchema,
+  income: aiExtractedIncomeSchema,
+  loan: aiExtractedLoanSchema,
+  receipt: aiExtractedReceiptOrBankSchema,
+  bank_statement: aiExtractedReceiptOrBankSchema,
+  financial_document: aiExtractedReceiptOrBankSchema,
+};
+
 export async function extractStructuredDataWithVision(params: {
   base64Image?: string;
+  mimeType?: string;
   textContent?: string;
-  targetType: "insurance" | "investment" | "income" | "loan";
+  targetType: ExtractionTargetType;
+  allowRemoteEgress?: boolean;
+  signal?: AbortSignal;
 }): Promise<{
   ok: boolean;
   model: string;
+  requiresReview: true;
+  isRemote: boolean;
   extracted: Record<string, unknown> | null;
+  unknownFields: string[];
   rawText: string;
   hint?: string;
 }> {
   const cfg = getEnvConfig();
 
-  const schemaPromptByType: Record<string, string> = {
-    insurance: `Extract insurance policy details as valid JSON with keys:
-{ "name": string, "policyType": "term" | "health" | "life_endowment", "provider": string, "premiumAmount": number, "coverAmount": string, "expiryDate": "YYYY-MM-DD or text", "notes": string }`,
-    investment: `Extract investment/SIP statement details as valid JSON with keys:
-{ "name": string, "assetClass": "mutual_fund" | "stock" | "nps" | "ppf" | "fd" | "rd", "date": "YYYY-MM-DD", "amount": number, "navOrPrice": number, "units": number, "remarks": string }`,
-    income: `Extract salary/rental income details as valid JSON with keys:
-{ "date": "YYYY-MM-DD", "source": string, "category": "salary" | "rental" | "dividend" | "other", "inhandAmount": number, "account": string, "notes": string }`,
-    loan: `Extract loan statement details as valid JSON with keys:
-{ "name": string, "lender": string, "principalSanctioned": number, "currentBalance": number, "interestRate": number, "emiAmount": number, "notes": string }`,
+  if (cfg.isRemoteAiEndpoint && !params.allowRemoteEgress) {
+    throw new AppError(
+      "Configured vision/AI endpoint is remote. Confirm remote data sharing before uploading documents for extraction.",
+      409,
+      "REMOTE_AI_CONFIRMATION_REQUIRED"
+    );
+  }
+
+  const schemaPromptByType: Record<ExtractionTargetType, string> = {
+    insurance: `{ "name": string|null, "policyType": "term"|"health"|"life_endowment"|null, "provider": string|null, "premiumAmount": number|null, "premiumFrequency": "annual"|"monthly"|null, "coverAmount": string|null, "expiryDate": "YYYY-MM-DD"|null, "notes": string|null }`,
+    investment: `{ "name": string|null, "assetClass": "mutual_fund"|"stock"|"etf_us"|"etf_in"|"nps"|"ppf"|"fd"|"rd"|"chit"|"esop"|"gold_silver"|"bond"|null, "date": "YYYY-MM-DD"|null, "amount": number|null, "navOrPrice": number|null, "units": number|null, "remarks": string|null }`,
+    income: `{ "date": "YYYY-MM-DD"|null, "source": string|null, "category": "salary"|"rental"|"dividend"|"other"|null, "inhandAmount": number|null, "account": string|null, "notes": string|null }`,
+    loan: `{ "name": string|null, "lender": string|null, "principalSanctioned": number|null, "currentBalance": number|null, "interestRate": number|null, "emiAmount": number|null, "notes": string|null }`,
+    receipt: `{ "documentKind": "receipt", "date": "YYYY-MM-DD"|null, "merchantOrInstitution": string|null, "totalAmount": number|null, "currency": string|null, "summary": string|null, "notes": string|null }`,
+    bank_statement: `{ "documentKind": "bank_statement", "date": "YYYY-MM-DD"|null, "merchantOrInstitution": string|null, "totalAmount": number|null, "currency": string|null, "summary": string|null, "notes": string|null }`,
+    financial_document: `{ "documentKind": "financial_document", "date": "YYYY-MM-DD"|null, "merchantOrInstitution": string|null, "totalAmount": number|null, "currency": string|null, "summary": string|null, "notes": string|null }`,
   };
 
-  const instruction = `You are a financial document & image data extractor. Return ONLY a JSON object matching this schema (use null or 0 if not visible):\n${
-    schemaPromptByType[params.targetType] || schemaPromptByType.investment
+  const instruction = `You are a financial document extractor. Extract ONLY facts explicitly present in the input. NEVER invent or guess missing numbers or dates; set uncertain or absent fields to null. Return ONLY valid JSON matching:\n${
+    schemaPromptByType[params.targetType]
   }`;
+
+  const validateExtracted = (rawText: string) => {
+    const match = rawText.match(/\{[\s\S]*\}/);
+    const parsedJson = JSON.parse(match ? match[0] : rawText);
+    const validator = EXTRACTION_SCHEMAS[params.targetType];
+    const validated = validator.parse(parsedJson) as Record<string, unknown>;
+    const unknownFields = Object.entries(validated)
+      .filter(([, v]) => v === null || v === undefined || v === "")
+      .map(([k]) => k);
+    return { validated, unknownFields };
+  };
 
   if (cfg.activeProvider === "ollama") {
     const model = params.base64Image
@@ -534,23 +606,34 @@ export async function extractStructuredDataWithVision(params: {
         message.images = [params.base64Image];
       }
 
-      const res = await fetch(`${cfg.ollamaBaseUrl}/api/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model,
-          stream: false,
-          format: "json",
-          messages: [message],
-        }),
-      });
+      const res = await fetchWithTimeoutAndRetry(
+        `${cfg.ollamaBaseUrl}/api/chat`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model,
+            stream: false,
+            format: "json",
+            messages: [message],
+          }),
+        },
+        {
+          timeoutMs: cfg.aiTimeoutMs,
+          maxRetries: 1,
+          externalSignal: params.signal,
+        }
+      );
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         return {
           ok: false,
           model,
+          requiresReview: true,
+          isRemote: cfg.isRemoteAiEndpoint,
           extracted: null,
+          unknownFields: [],
           rawText: err?.error || "Ollama vision extraction failed",
           hint: `Pull the open-source vision model with: ollama pull ${model}`,
         };
@@ -558,31 +641,114 @@ export async function extractStructuredDataWithVision(params: {
 
       const json = await res.json();
       const rawText = String(json?.message?.content || "");
-      let extracted: Record<string, unknown> | null = null;
       try {
-        const match = rawText.match(/\{[\s\S]*\}/);
-        extracted = JSON.parse(match ? match[0] : rawText);
+        const { validated, unknownFields } = validateExtracted(rawText);
+        return {
+          ok: true,
+          model,
+          requiresReview: true,
+          isRemote: cfg.isRemoteAiEndpoint,
+          extracted: validated,
+          unknownFields,
+          rawText,
+        };
       } catch {
-        extracted = null;
+        return {
+          ok: false,
+          model,
+          requiresReview: true,
+          isRemote: cfg.isRemoteAiEndpoint,
+          extracted: null,
+          unknownFields: [],
+          rawText: "AI response did not match the expected structured schema.",
+        };
       }
-
-      return { ok: true, model, extracted, rawText };
-    } catch {
+    } catch (err) {
+      if (err instanceof AppError && err.status === 499) throw err;
       return {
         ok: false,
         model,
+        requiresReview: true,
+        isRemote: cfg.isRemoteAiEndpoint,
         extracted: null,
-        rawText: `Could not connect to Ollama at ${cfg.ollamaBaseUrl}`,
+        unknownFields: [],
+        rawText: "Could not connect to Ollama extraction service",
         hint: `Start Ollama and pull: ollama pull ${model}`,
       };
     }
   }
 
+  if (cfg.activeProvider === "oss_openai") {
+    const model = params.base64Image ? cfg.ossVisionModel : cfg.ossModel;
+    try {
+      const content = params.base64Image
+        ? [
+            { type: "text", text: instruction },
+            {
+              type: "image_url",
+              image_url: {
+                url: `data:${params.mimeType || "image/png"};base64,${
+                  params.base64Image
+                }`,
+              },
+            },
+          ]
+        : `${instruction}\n\nDOCUMENT TEXT:\n${(params.textContent || "").slice(
+            0,
+            6000
+          )}`;
+
+      const res = await fetchWithTimeoutAndRetry(
+        `${cfg.ossBaseUrl}/chat/completions`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(cfg.ossApiKey
+              ? { Authorization: `Bearer ${cfg.ossApiKey}` }
+              : {}),
+          },
+          body: JSON.stringify({
+            model,
+            response_format: { type: "json_object" },
+            messages: [{ role: "user", content }],
+          }),
+        },
+        {
+          timeoutMs: cfg.aiTimeoutMs,
+          maxRetries: 1,
+          externalSignal: params.signal,
+        }
+      );
+
+      if (res.ok) {
+        const json = await res.json();
+        const rawText = String(json?.choices?.[0]?.message?.content || "");
+        const { validated, unknownFields } = validateExtracted(rawText);
+        return {
+          ok: true,
+          model,
+          requiresReview: true,
+          isRemote: cfg.isRemoteAiEndpoint,
+          extracted: validated,
+          unknownFields,
+          rawText,
+        };
+      }
+    } catch (err) {
+      if (err instanceof AppError && err.status === 499) throw err;
+    }
+  }
+
   return {
     ok: false,
-    model: cfg.ossVisionModel,
+    model: cfg.ollamaVisionModel,
+    requiresReview: true,
+    isRemote: cfg.isRemoteAiEndpoint,
     extracted: null,
-    rawText: "Set AI_PROVIDER=ollama in .env.local to use local open-source vision extraction.",
+    unknownFields: [],
+    rawText:
+      "Local AI extraction requires Ollama or an OpenAI-compatible vision server.",
     hint: `ollama pull ${cfg.ollamaVisionModel}`,
   };
 }

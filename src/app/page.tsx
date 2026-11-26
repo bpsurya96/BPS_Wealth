@@ -15,6 +15,8 @@ import {
   ArrowUpRight,
   FileCheck2,
   Plus,
+  Trash2,
+  X,
 } from "lucide-react";
 import {
   Area,
@@ -33,6 +35,7 @@ import {
 import { formatCompactINR, formatINR, formatPercent } from "@/lib/utils";
 import { AiInsightBanner } from "@/components/AiInsightBanner";
 import { AiAssistantDrawer } from "@/components/AiAssistantDrawer";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 
 interface DashboardData {
   usdInrRate: number;
@@ -41,6 +44,9 @@ interface DashboardData {
   metrics: {
     totalInvestedInr: number;
     totalPortfolioInr: number;
+    otherFinancialAssetsInr: number;
+    physicalAssetsInr: number;
+    totalAssetsInr: number;
     totalGainInr: number;
     totalGainPct: number;
     portfolioXirr: number | null;
@@ -49,7 +55,11 @@ interface DashboardData {
     netWorthInr: number;
     expectedMonthlyRent: number;
     mainIncomeTotal: number;
+    rentalIncomeTotal: number;
+    dividendIncomeTotal: number;
+    otherIncomeTotal: number;
     passiveIncomeTotal: number;
+    totalAnnualInsurancePremiumInr: number;
     emergencyInvestedInr: number;
     emergencyTargetInr: number;
     holdingsCount: number;
@@ -64,6 +74,15 @@ interface DashboardData {
     count: number;
     totalInr: number;
   }>;
+  assetsList: Array<{
+    id: number;
+    name: string;
+    assetType: string;
+    currency: string;
+    currentValue: number;
+    valueInr: number;
+    isEstimated: boolean;
+  }>;
   loansList: Array<{
     id: number;
     name: string;
@@ -77,6 +96,8 @@ interface DashboardData {
     name: string;
     policyType: string;
     premiumAmount: number;
+    premiumFrequency: string;
+    annualizedPremium: number;
     coverAmount: string;
     docCount: number;
   }>;
@@ -84,9 +105,18 @@ interface DashboardData {
     month: string;
     salary: number;
     rental: number;
+    dividend: number;
+    other: number;
     total: number;
   }>;
-  snapshots: Array<{ id: number; date: string; netWorth: number }>;
+  snapshots: Array<{
+    id: number;
+    date: string;
+    totalAssets: number;
+    totalLiabilities: number | null;
+    liabilitiesKnown: boolean;
+    netWorth: number | null;
+  }>;
   goals: Array<{
     id: number;
     name: string;
@@ -114,13 +144,27 @@ export default function DashboardPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [backingUp, setBackingUp] = useState(false);
   const [toast, setToast] = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
   const [aiOpen, setAiOpen] = useState(false);
+  const [showAssetModal, setShowAssetModal] = useState(false);
+  const [assetToDelete, setAssetToDelete] = useState<number | null>(null);
+  const [assetForm, setAssetForm] = useState({
+    name: "",
+    assetType: "financial_cash",
+    currency: "INR",
+    currentValue: "",
+    isEstimated: false,
+    notes: "",
+  });
 
   const load = useCallback(async () => {
     try {
       const res = await fetch("/api/dashboard", { cache: "no-store" });
       if (res.ok) {
         setData(await res.json());
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setErrorMsg(err.error || "Failed to load dashboard");
       }
     } finally {
       setLoading(false);
@@ -134,15 +178,20 @@ export default function DashboardPage() {
   async function refreshPrices() {
     setRefreshing(true);
     setToast("");
+    setErrorMsg("");
     try {
       const res = await fetch("/api/prices/refresh", { method: "POST" });
       const json = await res.json();
-      setToast(
-        `Updated ${json.updatedCount ?? 0} live prices${
-          json.usdInrRate ? ` (USD/INR: ₹${json.usdInrRate})` : ""
-        }`
-      );
-      await load();
+      if (!res.ok) {
+        setErrorMsg(json.error || "Price refresh failed");
+      } else {
+        setToast(
+          `Updated ${json.updatedCount ?? 0} live prices${
+            json.usdInrRate ? ` (USD/INR: ₹${json.usdInrRate})` : ""
+          }`
+        );
+        await load();
+      }
     } finally {
       setRefreshing(false);
     }
@@ -151,16 +200,53 @@ export default function DashboardPage() {
   async function triggerBackup() {
     setBackingUp(true);
     setToast("");
+    setErrorMsg("");
     try {
       const res = await fetch("/api/backup", { method: "POST" });
       const json = await res.json();
-      if (json.backup?.filename) {
-        setToast(`Saved backup: ${json.backup.filename}`);
+      if (!res.ok) {
+        setErrorMsg(json.error || "Backup failed");
+      } else if (json.backup?.filename) {
+        setToast(`Saved & verified backup: ${json.backup.filename}`);
         await load();
       }
     } finally {
       setBackingUp(false);
     }
+  }
+
+  async function createAsset(e: React.FormEvent) {
+    e.preventDefault();
+    setErrorMsg("");
+    const res = await fetch("/api/assets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...assetForm,
+        currentValue: Number(assetForm.currentValue || 0),
+      }),
+    });
+    if (res.ok) {
+      setShowAssetModal(false);
+      setAssetForm({
+        name: "",
+        assetType: "financial_cash",
+        currency: "INR",
+        currentValue: "",
+        isEstimated: false,
+        notes: "",
+      });
+      await load();
+    } else {
+      const err = await res.json().catch(() => ({}));
+      setErrorMsg(err.error || "Failed to save asset");
+    }
+  }
+
+  async function deleteAsset(id: number) {
+    await fetch(`/api/assets?id=${id}`, { method: "DELETE" });
+    setAssetToDelete(null);
+    await load();
   }
 
   if (loading || !data) {
@@ -185,6 +271,10 @@ export default function DashboardPage() {
       ? Math.min(1, m.emergencyInvestedInr / m.emergencyTargetInr)
       : 0;
   const isEmpty = m.holdingsCount === 0 && data.incomeChart.length === 0;
+  const timelineChartData = data.snapshots.map((s) => ({
+    ...s,
+    displayValue: s.netWorth !== null ? s.netWorth : s.totalAssets,
+  }));
 
   return (
     <div className="space-y-6">
@@ -194,20 +284,30 @@ export default function DashboardPage() {
           <div>
             <div className="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-emerald-300">
               <TrendingUp className="h-3.5 w-3.5" />
-              Net Worth Overview • USD/INR ₹{data.usdInrRate.toFixed(2)}
+              Personal Net Worth Overview • USD/INR ₹{data.usdInrRate.toFixed(2)}
             </div>
             <div className="mt-3 text-3xl sm:text-4xl font-bold tracking-tight tabular-nums">
               {formatINR(m.netWorthInr)}
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-1 text-xs sm:text-sm text-slate-300 tabular-nums">
               <span>
-                Investments:{" "}
+                Investment Portfolio:{" "}
                 <strong className="text-white">
                   {formatCompactINR(m.totalPortfolioInr)}
                 </strong>
               </span>
+              {(m.otherFinancialAssetsInr > 0 || m.physicalAssetsInr > 0) && (
+                <span>
+                  Other/Physical Assets:{" "}
+                  <strong className="text-white">
+                    {formatCompactINR(
+                      m.otherFinancialAssetsInr + m.physicalAssetsInr
+                    )}
+                  </strong>
+                </span>
+              )}
               <span>
-                Gain:{" "}
+                Portfolio Gain:{" "}
                 <strong
                   className={
                     m.totalGainInr >= 0 ? "text-emerald-300" : "text-rose-300"
@@ -227,7 +327,7 @@ export default function DashboardPage() {
                 </span>
               )}
               <span>
-                Loans:{" "}
+                Liabilities:{" "}
                 <strong className="text-rose-300">
                   {formatCompactINR(m.totalLiabilitiesInr)}
                 </strong>
@@ -243,6 +343,14 @@ export default function DashboardPage() {
               <Zap className="h-4 w-4" />
               Quick-Log Month
             </Link>
+            <button
+              type="button"
+              onClick={() => setShowAssetModal(true)}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-white px-3.5 py-2.5 text-sm font-medium transition"
+            >
+              <Plus className="h-4 w-4" />
+              Add Asset
+            </button>
             <button
               type="button"
               onClick={refreshPrices}
@@ -272,20 +380,23 @@ export default function DashboardPage() {
           {toast}
         </div>
       )}
+      {errorMsg && (
+        <div className="rounded-xl bg-rose-50 border border-rose-200 px-4 py-2.5 text-sm text-rose-700">
+          {errorMsg}
+        </div>
+      )}
 
-      {/* AI Financial Pulse */}
       <AiInsightBanner scope="overview" onAskAi={() => setAiOpen(true)} />
 
       {isEmpty && (
         <div className="rounded-2xl border border-indigo-200 bg-indigo-50/70 p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <h2 className="font-semibold text-indigo-950 text-base">
-              Import your existing BPS Excel workbook to populate everything
+              Import your existing workbook to populate your portfolio
             </h2>
             <p className="text-sm text-indigo-800 mt-1">
-              Upload your current Excel/CSV sheet to populate MF/ETF SIP
-              ledgers, Stocks, NPS, PPF, FDs, Shop Passive Income, Loans, and
-              Insurance automatically.
+              Upload your Excel (.xlsx) or CSV sheet to populate MF/ETF SIP
+              ledgers, Stocks, NPS, PPF, FDs, Rentals, Loans, and Insurance.
             </p>
           </div>
           <Link
@@ -298,7 +409,7 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Side-by-Side 4 Pillars (Matching Sketch: Investment / Income / Loan / Insurance) */}
+      {/* 4 Pillars */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
         {/* 1. Investments Pillar */}
         <div className="rounded-2xl bg-white border border-slate-200/80 p-5 shadow-xs flex flex-col justify-between">
@@ -306,7 +417,7 @@ export default function DashboardPage() {
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-indigo-700">
                 <ArrowUpRight className="h-4 w-4" />
-                Investments (Generic)
+                Investments
               </div>
               <Link
                 href="/investments"
@@ -350,7 +461,7 @@ export default function DashboardPage() {
           </Link>
         </div>
 
-        {/* 2. Income Pillar (Main vs Passive) */}
+        {/* 2. Income Pillar */}
         <div className="rounded-2xl bg-white border border-slate-200/80 p-5 shadow-xs flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between mb-3">
@@ -376,13 +487,13 @@ export default function DashboardPage() {
               </div>
               <div className="rounded-xl bg-sky-50/80 border border-sky-100 p-3">
                 <div className="text-[11px] font-medium text-sky-700 uppercase">
-                  Passive Income (Rent & Other)
+                  Passive (Rent + Div + Other)
                 </div>
                 <div className="text-lg font-bold text-sky-950 tabular-nums">
                   {formatCompactINR(m.passiveIncomeTotal)}
                 </div>
                 <div className="text-[11px] text-sky-700 mt-0.5 tabular-nums">
-                  Run-rate: {formatINR(m.expectedMonthlyRent)}/mo
+                  Rent Run-rate: {formatINR(m.expectedMonthlyRent)}/mo
                 </div>
               </div>
             </div>
@@ -396,7 +507,7 @@ export default function DashboardPage() {
           </Link>
         </div>
 
-        {/* 3. Loans Pillar (Loan-1, Loan-2...) */}
+        {/* 3. Loans Pillar */}
         <div className="rounded-2xl bg-white border border-slate-200/80 p-5 shadow-xs flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between mb-3">
@@ -448,7 +559,7 @@ export default function DashboardPage() {
           </Link>
         </div>
 
-        {/* 4. Insurance Pillar (Term & Health + Documents) */}
+        {/* 4. Insurance Pillar */}
         <div className="rounded-2xl bg-white border border-slate-200/80 p-5 shadow-xs flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between mb-3">
@@ -462,6 +573,12 @@ export default function DashboardPage() {
               >
                 Upload Docs →
               </Link>
+            </div>
+            <div className="text-xs text-slate-500 mb-2 tabular-nums">
+              Annualized Total:{" "}
+              <strong className="text-slate-900">
+                {formatINR(m.totalAnnualInsurancePremiumInr)}/yr
+              </strong>
             </div>
             <div className="space-y-2">
               {data.policiesList.length === 0 ? (
@@ -477,7 +594,8 @@ export default function DashboardPage() {
                         {p.name}
                       </div>
                       <div className="text-[11px] text-teal-700 uppercase">
-                        {p.policyType} • {formatINR(p.premiumAmount)}/yr
+                        {p.policyType} • {formatINR(p.premiumAmount)}/
+                        {p.premiumFrequency === "monthly" ? "mo" : "yr"}
                       </div>
                     </div>
                     <span
@@ -512,6 +630,53 @@ export default function DashboardPage() {
           </div>
         </div>
       </div>
+
+      {/* Asset Register Summary (if any assets exist) */}
+      {data.assetsList.length > 0 && (
+        <div className="rounded-2xl bg-white border border-slate-200/80 p-5 shadow-xs space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="font-semibold text-slate-900">
+              Non-Portfolio Asset Register ({data.assetsList.length})
+            </h2>
+            <button
+              type="button"
+              onClick={() => setShowAssetModal(true)}
+              className="text-xs font-medium text-indigo-600 hover:underline"
+            >
+              + Add Asset
+            </button>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {data.assetsList.map((a) => (
+              <div
+                key={a.id}
+                className="rounded-xl border border-slate-100 bg-slate-50/70 p-3 flex items-center justify-between text-xs"
+              >
+                <div>
+                  <div className="font-semibold text-slate-800">{a.name}</div>
+                  <div className="text-[11px] text-slate-500">
+                    {a.assetType.replace("_", " ")}{" "}
+                    {a.isEstimated ? "• Estimated" : "• Actual"}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold tabular-nums text-slate-900">
+                    {formatCompactINR(a.valueInr)}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setAssetToDelete(a.id)}
+                    className="p-1 text-rose-500 hover:bg-rose-50 rounded"
+                    aria-label={`Delete ${a.name}`}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Charts Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -575,7 +740,7 @@ export default function DashboardPage() {
 
         <div className="rounded-2xl bg-white border border-slate-200/80 p-5 shadow-xs">
           <h2 className="font-semibold text-slate-900 mb-4">
-            Monthly Income (Main Salary vs Passive)
+            Monthly Income (Salary, Rental, Dividends, Other)
           </h2>
           {data.incomeChart.length === 0 ? (
             <p className="text-sm text-slate-400 py-16 text-center">
@@ -596,15 +761,27 @@ export default function DashboardPage() {
                   />
                   <Bar
                     dataKey="salary"
-                    name="Main Income (Salary)"
+                    name="Salary"
                     stackId="a"
                     fill="#10b981"
                   />
                   <Bar
                     dataKey="rental"
-                    name="Passive Income"
+                    name="Rental"
                     stackId="a"
                     fill="#0ea5e9"
+                  />
+                  <Bar
+                    dataKey="dividend"
+                    name="Dividends"
+                    stackId="a"
+                    fill="#8b5cf6"
+                  />
+                  <Bar
+                    dataKey="other"
+                    name="Other"
+                    stackId="a"
+                    fill="#f59e0b"
                     radius={[4, 4, 0, 0]}
                   />
                 </BarChart>
@@ -617,17 +794,24 @@ export default function DashboardPage() {
       {/* Net Worth Timeline & Financial Goals */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 rounded-2xl bg-white border border-slate-200/80 p-5 shadow-xs">
-          <h2 className="font-semibold text-slate-900 mb-4">
-            Net Worth Growth Timeline
-          </h2>
-          {data.snapshots.length === 0 ? (
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-semibold text-slate-900">
+              Historical Wealth Timeline
+            </h2>
+            {data.snapshots.some((s) => !s.liabilitiesKnown) && (
+              <span className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-0.5">
+                Some milestones show gross assets (historical liabilities unknown)
+              </span>
+            )}
+          </div>
+          {timelineChartData.length === 0 ? (
             <p className="text-sm text-slate-400 py-14 text-center">
               Import historical snapshots to view multi-year net worth growth.
             </p>
           ) : (
             <div className="h-60">
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={data.snapshots}>
+                <AreaChart data={timelineChartData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                   <XAxis dataKey="date" tick={{ fontSize: 11 }} />
                   <YAxis
@@ -639,8 +823,8 @@ export default function DashboardPage() {
                   />
                   <Area
                     type="monotone"
-                    dataKey="netWorth"
-                    name="Net Worth"
+                    dataKey="displayValue"
+                    name="Net Worth / Gross Assets"
                     stroke="#6366f1"
                     fill="#6366f122"
                     strokeWidth={2.5}
@@ -694,6 +878,112 @@ export default function DashboardPage() {
           )}
         </div>
       </div>
+
+      {/* Add Asset Modal */}
+      {showAssetModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-semibold text-base">
+                Add Non-Portfolio Asset
+              </h2>
+              <button
+                type="button"
+                onClick={() => setShowAssetModal(false)}
+                className="p-1 rounded-lg hover:bg-slate-100"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <form onSubmit={createAsset} className="space-y-3 text-sm">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">
+                  Asset Name *
+                </label>
+                <input
+                  required
+                  value={assetForm.name}
+                  onChange={(e) =>
+                    setAssetForm({ ...assetForm, name: e.target.value })
+                  }
+                  placeholder="e.g. Savings Bank Balance, Property, Vehicle"
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">
+                    Type
+                  </label>
+                  <select
+                    value={assetForm.assetType}
+                    onChange={(e) =>
+                      setAssetForm({ ...assetForm, assetType: e.target.value })
+                    }
+                    className="w-full rounded-xl border border-slate-200 px-3 py-2"
+                  >
+                    <option value="financial_cash">Cash / Bank</option>
+                    <option value="financial_other">Other Financial</option>
+                    <option value="physical_property">Real Estate / Property</option>
+                    <option value="physical_vehicle">Vehicle</option>
+                    <option value="physical_other">Other Physical</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">
+                    Current Value (INR)
+                  </label>
+                  <input
+                    required
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={assetForm.currentValue}
+                    onChange={(e) =>
+                      setAssetForm({ ...assetForm, currentValue: e.target.value })
+                    }
+                    className="w-full rounded-xl border border-slate-200 px-3 py-2"
+                  />
+                </div>
+              </div>
+              <label className="flex items-center gap-2 text-xs text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={assetForm.isEstimated}
+                  onChange={(e) =>
+                    setAssetForm({ ...assetForm, isEstimated: e.target.checked })
+                  }
+                />
+                Valuation is an estimate
+              </label>
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowAssetModal(false)}
+                  className="px-4 py-2 rounded-xl border border-slate-200 text-slate-600"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 rounded-xl bg-emerald-600 text-white font-medium"
+                >
+                  Save Asset
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      <ConfirmDialog
+        open={assetToDelete !== null}
+        title="Delete Asset"
+        message="Remove this asset from the Net Worth register? This cannot be undone."
+        confirmLabel="Delete"
+        onConfirm={() => assetToDelete !== null && deleteAsset(assetToDelete)}
+        onCancel={() => setAssetToDelete(null)}
+      />
 
       <AiAssistantDrawer
         open={aiOpen}

@@ -2,53 +2,71 @@ import { NextRequest, NextResponse } from "next/server";
 import { desc, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { incomeEntries } from "@/db/schema";
-import { requireUnlocked } from "@/lib/auth";
+import { requireAdminSession } from "@/lib/auth";
+import { verifyCsrf } from "@/lib/csrf";
+import { toMinorUnits } from "@/lib/currency";
+import { AppError, handleApiError } from "@/lib/errors";
+import { createIncomeSchema } from "@/lib/validation";
 
 export async function GET() {
-  if (!(await requireUnlocked())) {
-    return NextResponse.json({ error: "Locked" }, { status: 401 });
+  try {
+    await requireAdminSession();
+    const rows = db
+      .select()
+      .from(incomeEntries)
+      .orderBy(desc(incomeEntries.date), desc(incomeEntries.id))
+      .all();
+    return NextResponse.json({ items: rows });
+  } catch (err) {
+    return handleApiError(err, "income.GET");
   }
-  const rows = db
-    .select()
-    .from(incomeEntries)
-    .orderBy(desc(incomeEntries.date), desc(incomeEntries.id))
-    .all();
-  return NextResponse.json({ items: rows });
 }
 
 export async function POST(req: NextRequest) {
-  if (!(await requireUnlocked())) {
-    return NextResponse.json({ error: "Locked" }, { status: 401 });
+  try {
+    verifyCsrf(req);
+    await requireAdminSession();
+    const parsed = createIncomeSchema.parse(await req.json());
+    const date = parsed.date || new Date().toISOString().slice(0, 10);
+    const month = parsed.month || date.slice(0, 7);
+    const grossAmount = parsed.grossAmount ?? parsed.inhandAmount;
+
+    const inserted = db
+      .insert(incomeEntries)
+      .values({
+        month,
+        date,
+        source: parsed.source,
+        category: parsed.category,
+        grossAmount,
+        inhandAmount: parsed.inhandAmount,
+        tdsAmount: parsed.tdsAmount,
+        grossMinor: toMinorUnits(grossAmount),
+        inhandMinor: toMinorUnits(parsed.inhandAmount),
+        tdsMinor: toMinorUnits(parsed.tdsAmount),
+        rentalPaymentId: parsed.rentalPaymentId ?? null,
+        account: parsed.account,
+        notes: parsed.notes,
+      })
+      .returning()
+      .get();
+    return NextResponse.json({ item: inserted }, { status: 201 });
+  } catch (err) {
+    return handleApiError(err, "income.POST");
   }
-  const body = await req.json();
-  const date = String(body.date || new Date().toISOString().slice(0, 10));
-  const month = String(body.month || date.slice(0, 7));
-  const inserted = db
-    .insert(incomeEntries)
-    .values({
-      month,
-      date,
-      source: String(body.source || "Salary"),
-      category: String(body.category || "salary"),
-      grossAmount: Number(body.grossAmount || body.inhandAmount || 0),
-      inhandAmount: Number(body.inhandAmount || 0),
-      tdsAmount: Number(body.tdsAmount || 0),
-      account: String(body.account || "ICICI"),
-      notes: String(body.notes || ""),
-    })
-    .returning()
-    .get();
-  return NextResponse.json({ item: inserted }, { status: 201 });
 }
 
 export async function DELETE(req: NextRequest) {
-  if (!(await requireUnlocked())) {
-    return NextResponse.json({ error: "Locked" }, { status: 401 });
+  try {
+    verifyCsrf(req);
+    await requireAdminSession();
+    const id = Number(req.nextUrl.searchParams.get("id"));
+    if (!Number.isInteger(id) || id <= 0) {
+      throw new AppError("Invalid id", 400, "INVALID_ID");
+    }
+    db.delete(incomeEntries).where(eq(incomeEntries.id, id)).run();
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    return handleApiError(err, "income.DELETE");
   }
-  const id = Number(req.nextUrl.searchParams.get("id"));
-  if (!Number.isFinite(id)) {
-    return NextResponse.json({ error: "Invalid id" }, { status: 400 });
-  }
-  db.delete(incomeEntries).where(eq(incomeEntries.id, id)).run();
-  return NextResponse.json({ ok: true });
 }
