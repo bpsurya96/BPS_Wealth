@@ -156,13 +156,13 @@ export function getEnvConfig(): AppEnvConfig {
       : 12;
 
   const aiTimeoutRaw = Number.parseInt(
-    process.env.AI_TIMEOUT_MS || "30000",
+    process.env.AI_TIMEOUT_MS || "120000",
     10
   );
   const aiTimeoutMs =
-    Number.isFinite(aiTimeoutRaw) && aiTimeoutRaw >= 2000 && aiTimeoutRaw <= 180000
+    Number.isFinite(aiTimeoutRaw) && aiTimeoutRaw >= 2000 && aiTimeoutRaw <= 300000
       ? aiTimeoutRaw
-      : 30000;
+      : 120000;
 
   const maxBackupsRaw = Number.parseInt(
     process.env.BPS_MAX_BACKUPS || "15",

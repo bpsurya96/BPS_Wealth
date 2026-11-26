@@ -158,7 +158,11 @@ async function fetchWithTimeoutAndRetry(
       throw new AppError("AI request cancelled", 499, "REQUEST_ABORTED");
     }
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), options.timeoutMs);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, options.timeoutMs);
     const onExternalAbort = () => controller.abort();
     options.externalSignal?.addEventListener("abort", onExternalAbort, {
       once: true,
@@ -175,10 +179,15 @@ async function fetchWithTimeoutAndRetry(
       }
       lastError = new Error(`HTTP ${res.status}`);
     } catch (err) {
-      lastError = err;
       if (options.externalSignal?.aborted) {
         throw new AppError("AI request cancelled", 499, "REQUEST_ABORTED");
       }
+      if (timedOut) {
+        throw new Error(
+          `AI request timed out after ${Math.round(options.timeoutMs / 1000)}s`
+        );
+      }
+      lastError = err;
     } finally {
       clearTimeout(timer);
       options.externalSignal?.removeEventListener("abort", onExternalAbort);
@@ -337,10 +346,9 @@ function buildLocalFallbackReply(
       )})`
     );
   } else if (
-    q.includes("loan") ||
-    q.includes("insurance") ||
-    q.includes("term") ||
-    q.includes("health")
+    /\b(loan|loans|insurance|term\s+insurance|health\s+insurance|policy|policies)\b/.test(
+      q
+    )
   ) {
     lines.push(`Active Loan Balance: ${formatINR(snap.totalLiabilitiesInr)}`);
     for (const l of snap.loansSummary) {
@@ -424,6 +432,10 @@ ${JSON.stringify(safeSnap, null, 2)}`;
           body: JSON.stringify({
             model: selectedOllamaModel,
             stream: false,
+            keep_alive: "15m",
+            options: {
+              num_gpu: 99,
+            },
             messages: [
               { role: "system", content: systemPrompt },
               { role: "user", content: prompt },
@@ -458,14 +470,15 @@ ${JSON.stringify(safeSnap, null, 2)}`;
       };
     } catch (err) {
       if (err instanceof AppError && err.status === 499) throw err;
-      logger.warn("ai_ollama_fallback", {
-        reason: err instanceof Error ? err.message : "unreachable",
-      });
+      const reason = err instanceof Error ? err.message : "unreachable";
+      logger.warn("ai_ollama_fallback", { reason });
       return {
         reply: buildLocalFallbackReply(
           prompt,
           snap,
-          `Ollama not reachable at configured endpoint`
+          reason.includes("timed out")
+            ? `Ollama (${selectedOllamaModel}) ${reason}. Try a shorter prompt or increase AI_TIMEOUT_MS.`
+            : `Ollama not reachable at ${cfg.ollamaBaseUrl}`
         ),
         provider: "Local Deterministic Copilot",
         isRemote: false,
@@ -614,6 +627,10 @@ export async function extractStructuredDataWithVision(params: {
           body: JSON.stringify({
             model,
             stream: false,
+            keep_alive: "15m",
+            options: {
+              num_gpu: 99,
+            },
             format: "json",
             messages: [message],
           }),
