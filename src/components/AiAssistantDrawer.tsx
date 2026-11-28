@@ -441,7 +441,7 @@ export function AiAssistantDrawer({
               Extract
               <input
                 type="file"
-                accept=".png,.jpg,.jpeg,.webp,.txt,.csv"
+                accept=".pdf,.png,.jpg,.jpeg,.webp,.txt,.csv"
                 className="hidden"
                 onChange={(e) => {
                   const f = e.target.files?.[0];

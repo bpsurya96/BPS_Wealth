@@ -14,6 +14,11 @@ import {
   YAxis,
 } from "recharts";
 import { formatINR, formatPercent, formatUSD } from "@/lib/utils";
+import {
+  EsopEntry,
+  EsopSchedulePanel,
+  EsopSummary,
+} from "@/components/EsopSchedulePanel";
 
 interface HoldingDetail {
   id: number;
@@ -29,6 +34,11 @@ interface HoldingDetail {
   units: number;
   avgNav: number;
   currentNav: number;
+  interestRate: number;
+  maturityDate: string;
+  tenureMonths: number;
+  status: string;
+  notes: string;
 }
 
 interface TxnRow {
@@ -58,6 +68,8 @@ export default function InvestmentDetailPage() {
   const [monthly, setMonthly] = useState<MonthlySummaryRow[]>([]);
   const [xirr, setXirr] = useState<number | null>(null);
   const [usdInrRate, setUsdInrRate] = useState(84.5);
+  const [esopEntries, setEsopEntries] = useState<EsopEntry[]>([]);
+  const [esopSummary, setEsopSummary] = useState<EsopSummary | null>(null);
   const [loading, setLoading] = useState(true);
 
   const [form, setForm] = useState({
@@ -67,6 +79,15 @@ export default function InvestmentDetailPage() {
     navOrPrice: "",
     units: "",
     remarks: "",
+  });
+
+  const [editDetails, setEditDetails] = useState(false);
+  const [detailsForm, setDetailsForm] = useState({
+    maturityDate: "",
+    interestRate: "",
+    platform: "",
+    status: "active",
+    notes: "",
   });
 
   const load = useCallback(async () => {
@@ -82,6 +103,28 @@ export default function InvestmentDetailPage() {
         setMonthly(json.monthlySummary ?? []);
         setXirr(json.xirr ?? null);
         setUsdInrRate(json.usdInrRate ?? 84.5);
+        if (json.holding?.assetClass === "esop") {
+          const esopRes = await fetch(`/api/investments/${holdingId}/esop`, {
+            cache: "no-store",
+          });
+          if (esopRes.ok) {
+            const esopJson = await esopRes.json();
+            setEsopEntries(esopJson.entries ?? []);
+            setEsopSummary(esopJson.summary ?? null);
+          }
+        }
+        if (json.holding) {
+          setDetailsForm({
+            maturityDate: json.holding.maturityDate || "",
+            interestRate:
+              json.holding.interestRate > 0
+                ? String(json.holding.interestRate)
+                : "",
+            platform: json.holding.platform || "",
+            status: json.holding.status || "active",
+            notes: json.holding.notes || "",
+          });
+        }
         setForm((prev) => ({
           ...prev,
           amount:
@@ -104,6 +147,27 @@ export default function InvestmentDetailPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  async function saveDetails(e: React.FormEvent) {
+    e.preventDefault();
+    if (!holdingId) return;
+    const res = await fetch("/api/investments", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: Number(holdingId),
+        maturityDate: detailsForm.maturityDate,
+        interestRate: Number(detailsForm.interestRate || 0),
+        platform: detailsForm.platform,
+        status: detailsForm.status,
+        notes: detailsForm.notes,
+      }),
+    });
+    if (res.ok) {
+      setEditDetails(false);
+      await load();
+    }
+  }
 
   async function logTransaction(e: React.FormEvent) {
     e.preventDefault();
@@ -154,8 +218,10 @@ export default function InvestmentDetailPage() {
       : holding.currentValue;
   const currentInr = currentNative * fx;
   const investedInr = holding.investedAmount * fx;
-  const gainInr = currentInr - investedInr;
-  const gainPct = investedInr > 0 ? gainInr / investedInr : 0;
+  const isUnpricedEsop = holding.assetClass === "esop" && currentInr === 0;
+  const gainInr = isUnpricedEsop ? 0 : currentInr - investedInr;
+  const gainPct =
+    isUnpricedEsop || investedInr <= 0 ? 0 : gainInr / investedInr;
 
   return (
     <div className="space-y-6">
@@ -171,11 +237,92 @@ export default function InvestmentDetailPage() {
           <h1 className="text-2xl font-bold text-slate-900">{holding.name}</h1>
           <p className="text-xs text-slate-500 mt-0.5">
             {holding.platform || holding.currency}
+            {holding.interestRate > 0 ? ` • ${holding.interestRate}% p.a.` : ""}
+            {holding.maturityDate ? ` • Matures ${holding.maturityDate}` : ""}
             {holding.schemeCode ? ` • AMFI ${holding.schemeCode}` : ""}
             {holding.ticker ? ` • ${holding.ticker}` : ""}
+            {holding.status !== "active" ? ` • ${holding.status.toUpperCase()}` : ""}
           </p>
         </div>
+        <button
+          type="button"
+          onClick={() => setEditDetails((v) => !v)}
+          className="self-start sm:self-auto rounded-xl border border-slate-200 bg-white hover:bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700"
+        >
+          {editDetails ? "Close Editor" : "Edit Maturity / Rate / Details"}
+        </button>
       </div>
+
+      {editDetails && (
+        <form
+          onSubmit={saveDetails}
+          className="rounded-2xl bg-white border border-slate-200 p-4 grid grid-cols-1 sm:grid-cols-5 gap-3 text-xs shadow-xs"
+        >
+          <div>
+            <label className="block text-[11px] font-medium text-slate-500 mb-1">
+              Platform / Bank
+            </label>
+            <input
+              value={detailsForm.platform}
+              onChange={(e) =>
+                setDetailsForm({ ...detailsForm, platform: e.target.value })
+              }
+              className="w-full rounded-xl border border-slate-200 px-3 py-1.5"
+            />
+          </div>
+          <div>
+            <label className="block text-[11px] font-medium text-slate-500 mb-1">
+              Maturity Date
+            </label>
+            <input
+              type="date"
+              value={detailsForm.maturityDate}
+              onChange={(e) =>
+                setDetailsForm({ ...detailsForm, maturityDate: e.target.value })
+              }
+              className="w-full rounded-xl border border-slate-200 px-3 py-1.5"
+            />
+          </div>
+          <div>
+            <label className="block text-[11px] font-medium text-slate-500 mb-1">
+              Interest Rate (%)
+            </label>
+            <input
+              type="number"
+              step="any"
+              value={detailsForm.interestRate}
+              onChange={(e) =>
+                setDetailsForm({ ...detailsForm, interestRate: e.target.value })
+              }
+              className="w-full rounded-xl border border-slate-200 px-3 py-1.5"
+            />
+          </div>
+          <div>
+            <label className="block text-[11px] font-medium text-slate-500 mb-1">
+              Status
+            </label>
+            <select
+              value={detailsForm.status}
+              onChange={(e) =>
+                setDetailsForm({ ...detailsForm, status: e.target.value })
+              }
+              className="w-full rounded-xl border border-slate-200 px-3 py-1.5"
+            >
+              <option value="active">Active</option>
+              <option value="matured">Matured</option>
+              <option value="closed">Closed</option>
+            </select>
+          </div>
+          <div className="flex items-end">
+            <button
+              type="submit"
+              className="w-full rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold px-3 py-1.5"
+            >
+              Save Changes
+            </button>
+          </div>
+        </form>
+      )}
 
       {/* KPI Strip */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
@@ -184,6 +331,11 @@ export default function InvestmentDetailPage() {
           <div className="text-lg font-bold text-slate-900 tabular-nums mt-1">
             {formatINR(investedInr)}
           </div>
+          {holding.currency === "USD" && (
+            <div className="text-xs text-slate-500 tabular-nums">
+              {formatUSD(holding.investedAmount)}
+            </div>
+          )}
         </div>
         <div className="rounded-2xl bg-white border border-slate-200 p-4">
           <div className="text-xs text-slate-500">Current Value (INR)</div>
@@ -228,6 +380,17 @@ export default function InvestmentDetailPage() {
           </div>
         </div>
       </div>
+
+      {holding.assetClass === "esop" && holdingId && (
+        <EsopSchedulePanel
+          holdingId={holdingId}
+          currency={holding.currency}
+          usdInrRate={usdInrRate}
+          entries={esopEntries}
+          summary={esopSummary}
+          onUpdated={load}
+        />
+      )}
 
       {/* Monthly SIP Bar Chart */}
       <div className="rounded-2xl bg-white border border-slate-200 p-5 shadow-xs">

@@ -280,8 +280,7 @@ export function generateDeterministicInsights(
     const missingDocs = snap.policiesSummary.filter((p) => p.docCount === 0);
     if (missingDocs.length > 0) {
       insights.push(
-        `${missingDocs.length} insurance ${
-          missingDocs.length === 1 ? "policy" : "policies"
+        `${missingDocs.length} insurance ${missingDocs.length === 1 ? "policy" : "policies"
         } (${missingDocs
           .map((p) => p.name)
           .join(", ")}) still need policy document upload.`
@@ -312,10 +311,9 @@ function buildLocalFallbackReply(
     lines.push(
       `Portfolio Value: ${formatINR(snap.totalPortfolioInr)} (Invested ${formatINR(
         snap.totalInvestedInr
-      )}${
-        snap.portfolioXirr !== null
-          ? `, Overall XIRR ${formatPercent(snap.portfolioXirr)}`
-          : ""
+      )}${snap.portfolioXirr !== null
+        ? `, Overall XIRR ${formatPercent(snap.portfolioXirr)}`
+        : ""
       }).`
     );
     lines.push(
@@ -325,8 +323,7 @@ function buildLocalFallbackReply(
       lines.push("Top holdings:");
       for (const h of sorted.slice(0, 5)) {
         lines.push(
-          `• ${h.name}: ${formatCompactINR(h.currentInr)}${
-            h.xirr !== null ? ` (XIRR ${formatPercent(h.xirr)})` : ""
+          `• ${h.name}: ${formatCompactINR(h.currentInr)}${h.xirr !== null ? ` (XIRR ${formatPercent(h.xirr)})` : ""
           }`
         );
       }
@@ -363,8 +360,7 @@ function buildLocalFallbackReply(
     );
     for (const p of snap.policiesSummary) {
       lines.push(
-        `• ${p.name} (${p.policyType}): ${formatINR(p.premiumAmount)} / ${
-          p.premiumFrequency
+        `• ${p.name} (${p.policyType}): ${formatINR(p.premiumAmount)} / ${p.premiumFrequency
         }, Docs: ${p.docCount}`
       );
     }
@@ -589,13 +585,46 @@ export async function extractStructuredDataWithVision(params: {
     financial_document: `{ "documentKind": "financial_document", "date": "YYYY-MM-DD"|null, "merchantOrInstitution": string|null, "totalAmount": number|null, "currency": string|null, "summary": string|null, "notes": string|null }`,
   };
 
-  const instruction = `You are a financial document extractor. Extract ONLY facts explicitly present in the input. NEVER invent or guess missing numbers or dates; set uncertain or absent fields to null. Return ONLY valid JSON matching:\n${
-    schemaPromptByType[params.targetType]
-  }`;
+  const instruction = `You are a financial document extractor. Extract ONLY facts explicitly present in the input. NEVER invent or guess missing numbers or dates; set uncertain or absent fields to null. Return ONLY valid JSON matching:\n${schemaPromptByType[params.targetType]
+    }`;
 
   const validateExtracted = (rawText: string) => {
-    const match = rawText.match(/\{[\s\S]*\}/);
-    const parsedJson = JSON.parse(match ? match[0] : rawText);
+    const cleaned = rawText
+      .replace(/<think>[\s\S]*?<\/think>/gi, "")
+      .replace(/```(?:json)?\s*([\s\S]*?)```/gi, "$1")
+      .trim();
+
+    let parsedJson: unknown;
+    try {
+      parsedJson = JSON.parse(cleaned);
+    } catch {
+      const objMatch = cleaned.match(/\{[\s\S]*\}/);
+      const arrMatch = cleaned.match(/\[[\s\S]*\]/);
+      if (objMatch) {
+        parsedJson = JSON.parse(objMatch[0]);
+      } else if (arrMatch) {
+        parsedJson = JSON.parse(arrMatch[0]);
+      } else {
+        throw new Error("No JSON object found in AI output");
+      }
+    }
+
+    if (Array.isArray(parsedJson)) {
+      parsedJson = parsedJson[0] ?? {};
+    }
+    if (
+      parsedJson &&
+      typeof parsedJson === "object" &&
+      !("name" in parsedJson) &&
+      !("date" in parsedJson)
+    ) {
+      const obj = parsedJson as Record<string, unknown>;
+      const nested = obj.data ?? obj.result ?? obj.extracted;
+      if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+        parsedJson = nested;
+      }
+    }
+
     const validator = EXTRACTION_SCHEMAS[params.targetType];
     const validated = validator.parse(parsedJson) as Record<string, unknown>;
     const unknownFields = Object.entries(validated)
@@ -657,7 +686,9 @@ export async function extractStructuredDataWithVision(params: {
       }
 
       const json = await res.json();
-      const rawText = String(json?.message?.content || "");
+      const rawText = String(
+        json?.message?.content || json?.message?.thinking || ""
+      );
       try {
         const { validated, unknownFields } = validateExtracted(rawText);
         return {
@@ -669,7 +700,11 @@ export async function extractStructuredDataWithVision(params: {
           unknownFields,
           rawText,
         };
-      } catch {
+      } catch (err) {
+        logger.warn("ai_extract_schema_mismatch", {
+          targetType: params.targetType,
+          reason: err instanceof Error ? err.message : "parse_error",
+        });
         return {
           ok: false,
           model,
@@ -677,7 +712,8 @@ export async function extractStructuredDataWithVision(params: {
           isRemote: cfg.isRemoteAiEndpoint,
           extracted: null,
           unknownFields: [],
-          rawText: "AI response did not match the expected structured schema.",
+          rawText:
+            "AI response did not match the expected structured schema. Try selecting a more specific document type or uploading a clearer image/PDF.",
         };
       }
     } catch (err) {
@@ -700,20 +736,19 @@ export async function extractStructuredDataWithVision(params: {
     try {
       const content = params.base64Image
         ? [
-            { type: "text", text: instruction },
-            {
-              type: "image_url",
-              image_url: {
-                url: `data:${params.mimeType || "image/png"};base64,${
-                  params.base64Image
+          { type: "text", text: instruction },
+          {
+            type: "image_url",
+            image_url: {
+              url: `data:${params.mimeType || "image/png"};base64,${params.base64Image
                 }`,
-              },
             },
-          ]
+          },
+        ]
         : `${instruction}\n\nDOCUMENT TEXT:\n${(params.textContent || "").slice(
-            0,
-            6000
-          )}`;
+          0,
+          6000
+        )}`;
 
       const res = await fetchWithTimeoutAndRetry(
         `${cfg.ossBaseUrl}/chat/completions`,

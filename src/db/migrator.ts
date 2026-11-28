@@ -29,6 +29,7 @@ const REQUIRED_TABLES = [
   "investment_categories",
   "documents",
   "import_history",
+  "esop_vesting_entries",
 ];
 
 function getMigrationsDir(): string {

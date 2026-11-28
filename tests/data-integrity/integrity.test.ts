@@ -5,7 +5,7 @@ import ExcelJS from "exceljs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { db, paths, sqlite } from "@/db";
 import { runMigrations } from "@/db/migrator";
-import { incomeEntries } from "@/db/schema";
+import { incomeEntries, investmentHoldings } from "@/db/schema";
 import {
   createFullBackupBundle,
   restoreFromBackupBuffer,
@@ -94,6 +94,33 @@ describe("Data Integrity, Migrations, Backup & Deduplication", () => {
     const res2 = applyParsedImport(parsed2, false);
     expect(res2.addedCount).toBe(0);
     expect(db.select().from(incomeEntries).all().length).toBe(1);
+  });
+
+  it("recomputes holding investedAmount, units, avgNav, and currentValue from imported ledger blocks", async () => {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("SIPs");
+    ws.addRow(["Sample Flexi Fund"]);
+    ws.addRow([]);
+    ws.addRow(["Date", "Days", "Amount", "NAV", "units"]);
+    ws.addRow(["2024-01-10", 300, 10000, 100, 100]);
+    ws.addRow(["2024-02-10", 270, 10000, 125, 80]);
+    const buf = Buffer.from(await wb.xlsx.writeBuffer());
+
+    const parsed = await parseWorkbookBuffer(buf, "sips.xlsx");
+    expect(parsed.holdings.length).toBe(1);
+    expect(parsed.transactions.length).toBe(2);
+    expect(parsed.holdings[0].investedAmount).toBe(20000);
+    expect(parsed.holdings[0].units).toBe(180);
+    expect(parsed.holdings[0].currentNav).toBe(125);
+    expect(parsed.holdings[0].currentValue).toBe(22500);
+
+    applyParsedImport(parsed, false);
+    const saved = db.select().from(investmentHoldings).all();
+    expect(saved.length).toBe(1);
+    expect(saved[0].investedAmount).toBe(20000);
+    expect(saved[0].units).toBe(180);
+    expect(saved[0].currentNav).toBe(125);
+    expect(saved[0].currentValue).toBe(22500);
   });
 
   it("safely migrates a legacy pre-Drizzle database without dropping records and creates a backup", () => {

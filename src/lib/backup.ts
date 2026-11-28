@@ -10,6 +10,7 @@ import {
   appSettings,
   assetRegister,
   documents,
+  esopVestingEntries,
   financialGoals,
   incomeEntries,
   insurancePolicies,
@@ -128,6 +129,7 @@ export function collectRecordCounts(
     "financial_goals",
     "investment_categories",
     "documents",
+    "esop_vesting_entries",
   ];
   const counts: Record<string, number> = {};
   for (const tbl of tables) {
@@ -539,6 +541,7 @@ export function exportAllDataJson() {
     netWorthSnapshots: db.select().from(netWorthSnapshots).all(),
     financialGoals: db.select().from(financialGoals).all(),
     documents: db.select().from(documents).all(),
+    esopVestingEntries: db.select().from(esopVestingEntries).all(),
   };
 }
 
@@ -572,6 +575,10 @@ export async function exportWorkbookBuffer(): Promise<Buffer> {
   appendSheet("Assets", data.assets as Array<Record<string, unknown>>);
   appendSheet("Net_Worth", data.netWorthSnapshots as Array<Record<string, unknown>>);
   appendSheet("Goals", data.financialGoals as Array<Record<string, unknown>>);
+  appendSheet(
+    "ESOP_Vesting",
+    data.esopVestingEntries as Array<Record<string, unknown>>
+  );
 
   const buf = await wb.xlsx.writeBuffer();
   return Buffer.from(buf);

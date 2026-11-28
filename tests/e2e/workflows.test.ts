@@ -4,6 +4,11 @@ import { GET as getDashboard } from "@/app/api/dashboard/route";
 import { POST as postPin } from "@/app/api/auth/pin/route";
 import { POST as postInvestment } from "@/app/api/investments/route";
 import { POST as postInvTxn } from "@/app/api/investments/[id]/transactions/route";
+import {
+  GET as getEsop,
+  PATCH as patchEsop,
+  POST as postEsop,
+} from "@/app/api/investments/[id]/esop/route";
 import { POST as postIncome } from "@/app/api/income/route";
 import { POST as postRental } from "@/app/api/rentals/route";
 import { POST as postLoan } from "@/app/api/loans/route";
@@ -14,6 +19,7 @@ import { GET as getDocFile } from "@/app/api/documents/[id]/route";
 import { POST as postImport } from "@/app/api/import/route";
 import { GET as getBackup, POST as postBackup } from "@/app/api/backup/route";
 import { POST as postAi } from "@/app/api/ai/route";
+import { POST as postAiExtract } from "@/app/api/ai/extract/route";
 import { POST as postSql } from "@/app/api/sql/route";
 import {
   createIsolatedTestEnv,
@@ -291,7 +297,45 @@ describe("End-to-End Portfolio Workflows (Production Auth Mode)", () => {
     const aiJson = await aiRes.json();
     expect(aiJson.reply).toContain("Main Income");
 
-    // 14. SQL Studio read query works while writes are rejected
+    // 14. AI PDF extraction endpoint parses valid PDF text cleanly and requires review
+    const validPdfText = [
+      "%PDF-1.4",
+      "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj",
+      "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj",
+      "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj",
+      "4 0 obj << /Length 55 >> stream",
+      "BT /F1 12 Tf 20 80 Td (Mutual Fund SIP Rs 5000) Tj ET",
+      "endstream endobj",
+      "5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj",
+      "xref",
+      "0 6",
+      "0000000000 65535 f ",
+      "0000000009 00000 n ",
+      "0000000058 00000 n ",
+      "0000000115 00000 n ",
+      "0000000241 00000 n ",
+      "0000000346 00000 n ",
+      "trailer << /Size 6 /Root 1 0 R >>",
+      "startxref",
+      "414",
+      "%%EOF",
+    ].join("\n");
+    const extractFd = new FormData();
+    extractFd.append(
+      "file",
+      new File([Buffer.from(validPdfText, "utf-8")], "statement.pdf", {
+        type: "application/pdf",
+      })
+    );
+    extractFd.append("targetType", "investment");
+    const extractRes = await postAiExtract(
+      makeFormRequest("http://localhost/api/ai/extract", extractFd)
+    );
+    expect(extractRes.status).toBe(200);
+    const extractJson = await extractRes.json();
+    expect(extractJson.requiresReview).toBe(true);
+
+    // 15. SQL Studio read query works while writes are rejected
     const sqlOk = await postSql(
       makeJsonRequest("http://localhost/api/sql", "POST", {
         query: "SELECT COUNT(*) AS cnt FROM loans",
@@ -300,5 +344,72 @@ describe("End-to-End Portfolio Workflows (Production Auth Mode)", () => {
     expect(sqlOk.status).toBe(200);
     const sqlJson = await sqlOk.json();
     expect(sqlJson.rows[0].cnt).toBe(1);
+
+    // 16. ESOP vesting schedule creation & exercise checkbox toggle
+    const esopHoldingRes = await postInvestment(
+      makeJsonRequest("http://localhost/api/investments", "POST", {
+        name: "Sample ESOP",
+        assetClass: "esop",
+        currency: "USD",
+      })
+    );
+    expect(esopHoldingRes.status).toBe(201);
+    const { holding: esopHolding } = await esopHoldingRes.json();
+
+    const seedEsopRes = await postEsop(
+      makeJsonRequest(
+        `http://localhost/api/investments/${esopHolding.id}/esop`,
+        "POST",
+        {
+          replace: true,
+          entries: [
+            {
+              vestingDate: "2026-08-31",
+              optionsVested: 14,
+              exercised: true,
+              sharePrice: 12.5,
+              strikePrice: 2.35,
+            },
+            {
+              vestingDate: "2026-09-30",
+              optionsVested: 14,
+              exercised: false,
+              sharePrice: 12.5,
+              strikePrice: 2.35,
+            },
+          ],
+        }
+      ),
+      { params: Promise.resolve({ id: String(esopHolding.id) }) }
+    );
+    expect(seedEsopRes.status).toBe(201);
+    const seeded = await seedEsopRes.json();
+    expect(seeded.entries.length).toBe(2);
+    expect(seeded.entries[1].cumulativeVested).toBe(28);
+    expect(seeded.summary.totalExercisedQty).toBe(14);
+    expect(seeded.summary.totalInvested).toBe(207.9);
+    expect(seeded.holding.currentValue).toBe(0);
+
+    const toggleRes = await patchEsop(
+      makeJsonRequest(
+        `http://localhost/api/investments/${esopHolding.id}/esop`,
+        "PATCH",
+        { entryId: seeded.entries[1].id, exercised: true }
+      ),
+      { params: Promise.resolve({ id: String(esopHolding.id) }) }
+    );
+    expect(toggleRes.status).toBe(200);
+    const toggled = await toggleRes.json();
+    expect(toggled.summary.totalExercisedQty).toBe(28);
+    expect(toggled.summary.totalInvested).toBe(415.8);
+
+    const getEsopRes = await getEsop(
+      makeJsonRequest(
+        `http://localhost/api/investments/${esopHolding.id}/esop`,
+        "GET"
+      ),
+      { params: Promise.resolve({ id: String(esopHolding.id) }) }
+    );
+    expect(getEsopRes.status).toBe(200);
   });
 });

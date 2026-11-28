@@ -308,3 +308,27 @@ export const importHistory = sqliteTable("import_history", {
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
 });
+
+export const esopVestingEntries = sqliteTable("esop_vesting_entries", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  holdingId: integer("holding_id")
+    .notNull()
+    .references(() => investmentHoldings.id, { onDelete: "cascade" }),
+  period: integer("period").notNull(),
+  vestingDate: text("vesting_date").notNull(), // YYYY-MM-DD
+  optionsVested: integer("options_vested").notNull().default(0),
+  cumulativeVested: integer("cumulative_vested").notNull().default(0),
+  exercised: integer("exercised", { mode: "boolean" })
+    .notNull()
+    .default(false),
+  exerciseQuantity: integer("exercise_quantity").notNull().default(0),
+  sharePrice: real("share_price").notNull().default(0),
+  strikePrice: real("strike_price").notNull().default(0),
+  totalPrice: real("total_price").notNull().default(0),
+  sharePriceMinor: integer("share_price_minor").notNull().default(0),
+  strikePriceMinor: integer("strike_price_minor").notNull().default(0),
+  totalPriceMinor: integer("total_price_minor").notNull().default(0),
+  createdAt: text("created_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+});

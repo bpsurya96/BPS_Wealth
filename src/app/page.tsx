@@ -17,6 +17,8 @@ import {
   Plus,
   Trash2,
   X,
+  BellRing,
+  CalendarClock,
 } from "lucide-react";
 import {
   Area,
@@ -37,10 +39,25 @@ import { AiInsightBanner } from "@/components/AiInsightBanner";
 import { AiAssistantDrawer } from "@/components/AiAssistantDrawer";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 
+interface MaturityItem {
+  id: number;
+  name: string;
+  assetClass: string;
+  platform: string;
+  maturityDate: string;
+  interestRate: number;
+  investedInr: number;
+  currentInr: number;
+  isEmergencyFund: boolean;
+  daysRemaining: number;
+}
+
 interface DashboardData {
   usdInrRate: number;
   lastNavRefreshAt: string;
   lastBackupAt: string;
+  nextFdMaturity: MaturityItem | null;
+  upcomingMaturities: MaturityItem[];
   metrics: {
     totalInvestedInr: number;
     totalPortfolioInr: number;
@@ -387,6 +404,104 @@ export default function DashboardPage() {
       )}
 
       <AiInsightBanner scope="overview" onAskAi={() => setAiOpen(true)} />
+
+      {data.nextFdMaturity && (
+        <div
+          className={`rounded-2xl border p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-xs ${
+            data.nextFdMaturity.daysRemaining <= 30
+              ? "border-amber-300 bg-amber-50/90 text-amber-950"
+              : "border-sky-200 bg-sky-50/80 text-slate-900"
+          }`}
+        >
+          <div className="flex items-start gap-3">
+            <div
+              className={`rounded-xl p-2.5 shrink-0 ${
+                data.nextFdMaturity.daysRemaining <= 30
+                  ? "bg-amber-500 text-white"
+                  : "bg-sky-600 text-white"
+              }`}
+            >
+              <BellRing className="h-5 w-5" />
+            </div>
+            <div className="space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-bold uppercase tracking-wider">
+                  Next Fixed Deposit Maturity
+                </span>
+                <span
+                  className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${
+                    data.nextFdMaturity.daysRemaining < 0
+                      ? "bg-rose-600 text-white"
+                      : data.nextFdMaturity.daysRemaining <= 14
+                        ? "bg-amber-600 text-white"
+                        : data.nextFdMaturity.daysRemaining <= 30
+                          ? "bg-amber-200 text-amber-950"
+                          : "bg-sky-200 text-sky-900"
+                  }`}
+                >
+                  <CalendarClock className="h-3 w-3" />
+                  {data.nextFdMaturity.daysRemaining === 0
+                    ? "Matures today"
+                    : data.nextFdMaturity.daysRemaining > 0
+                      ? `In ${data.nextFdMaturity.daysRemaining} day${
+                          data.nextFdMaturity.daysRemaining === 1 ? "" : "s"
+                        }`
+                      : `Matured ${Math.abs(data.nextFdMaturity.daysRemaining)}d ago`}
+                </span>
+              </div>
+              <div className="text-sm sm:text-base font-semibold">
+                {data.nextFdMaturity.name} •{" "}
+                <span className="tabular-nums">
+                  {formatINR(data.nextFdMaturity.currentInr)}
+                </span>{" "}
+                <span className="font-normal text-xs sm:text-sm opacity-80">
+                  matures on{" "}
+                  <strong>
+                    {new Date(
+                      `${data.nextFdMaturity.maturityDate}T00:00:00`
+                    ).toLocaleDateString("en-IN", {
+                      day: "2-digit",
+                      month: "short",
+                      year: "numeric",
+                    })}
+                  </strong>
+                  {data.nextFdMaturity.interestRate > 0
+                    ? ` @ ${data.nextFdMaturity.interestRate}%`
+                    : ""}
+                </span>
+              </div>
+              {data.upcomingMaturities.filter(
+                (item) =>
+                  item.assetClass === "fd" &&
+                  item.id !== data.nextFdMaturity?.id
+              ).length > 0 && (
+                <div className="text-xs opacity-80 flex flex-wrap gap-x-3 gap-y-1">
+                  <span className="font-medium">Following FDs:</span>
+                  {data.upcomingMaturities
+                    .filter(
+                      (item) =>
+                        item.assetClass === "fd" &&
+                        item.id !== data.nextFdMaturity?.id
+                    )
+                    .slice(0, 3)
+                    .map((item) => (
+                      <span key={item.id} className="tabular-nums">
+                        {item.name.split(" (")[0]} ({item.maturityDate} •{" "}
+                        {formatCompactINR(item.currentInr)})
+                      </span>
+                    ))}
+                </div>
+              )}
+            </div>
+          </div>
+          <Link
+            href={`/investments/${data.nextFdMaturity.id}`}
+            className="shrink-0 inline-flex items-center justify-center gap-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 text-xs font-semibold transition"
+          >
+            Review FD →
+          </Link>
+        </div>
+      )}
 
       {isEmpty && (
         <div className="rounded-2xl border border-indigo-200 bg-indigo-50/70 p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">

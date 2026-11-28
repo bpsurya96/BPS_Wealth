@@ -23,6 +23,7 @@
     "react-dom": "19.1.0",
     "recharts": "^3.11.1",
     "tailwind-merge": "^3.7.1",
+    "unpdf": "^1.7.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {

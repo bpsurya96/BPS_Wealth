@@ -414,7 +414,7 @@ export default function LoansAndInsurancePage() {
             AI Extract Policy from Image
             <input
               type="file"
-              accept="image/*,.txt,.csv"
+              accept=".pdf,.png,.jpg,.jpeg,.webp,.txt,.csv"
               className="hidden"
               onChange={(e) => {
                 const f = e.target.files?.[0];

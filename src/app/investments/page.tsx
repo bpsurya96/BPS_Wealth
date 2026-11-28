@@ -436,9 +436,25 @@ export default function InvestmentsPage() {
                               {h.txnCount > 0
                                 ? ` • ${h.txnCount} txns`
                                 : ""}
-                              {h.maturityDate
-                                ? ` • Matures ${h.maturityDate}`
-                                : ""}
+                              {h.maturityDate ? (
+                                <span
+                                  className={`ml-1 font-medium ${
+                                    Math.round(
+                                      (Date.parse(`${h.maturityDate}T00:00:00Z`) -
+                                        Date.parse(
+                                          `${new Date().toISOString().slice(0, 10)}T00:00:00Z`
+                                        )) /
+                                        86_400_000
+                                    ) <= 30
+                                      ? "text-amber-600"
+                                      : "text-slate-500"
+                                  }`}
+                                >
+                                  • Matures {h.maturityDate}
+                                </span>
+                              ) : (
+                                ""
+                              )}
                             </div>
                           </td>
                           <td className="px-4 py-3">
@@ -503,7 +519,9 @@ export default function InvestmentsPage() {
                                 href={`/investments/${h.id}`}
                                 className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-semibold"
                               >
-                                All Months
+                                {h.assetClass === "esop"
+                                  ? "ESOP Schedule"
+                                  : "All Months"}
                                 <ArrowUpRight className="h-3.5 w-3.5" />
                               </Link>
                               <button
@@ -877,6 +895,19 @@ export default function InvestmentsPage() {
                     className="w-full rounded-xl border border-slate-200 px-3 py-2"
                   />
                 </div>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">
+                  Maturity Date (FD / RD / Bond)
+                </label>
+                <input
+                  type="date"
+                  value={newForm.maturityDate}
+                  onChange={(e) =>
+                    setNewForm({ ...newForm, maturityDate: e.target.value })
+                  }
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2"
+                />
               </div>
               <label className="flex items-center gap-2 text-xs text-slate-700 pt-1">
                 <input

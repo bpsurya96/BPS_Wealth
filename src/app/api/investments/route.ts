@@ -135,6 +135,7 @@ export async function PATCH(req: NextRequest) {
       .update(investmentHoldings)
       .set({
         name: parsed.name ?? existing.name,
+        platform: parsed.platform ?? existing.platform,
         schemeCode: parsed.schemeCode ?? existing.schemeCode,
         ticker: parsed.ticker ?? existing.ticker,
         plannedSip: nextPlannedSip,
@@ -145,7 +146,12 @@ export async function PATCH(req: NextRequest) {
         currentValueMinor: toMinorUnits(nextCurrent, existing.currency),
         units: nextUnits,
         currentNav: nextNav,
+        interestRate: parsed.interestRate ?? existing.interestRate,
+        maturityDate: parsed.maturityDate ?? existing.maturityDate,
+        tenureMonths: parsed.tenureMonths ?? existing.tenureMonths,
+        isEmergencyFund: parsed.isEmergencyFund ?? existing.isEmergencyFund,
         status: parsed.status ?? existing.status,
+        notes: parsed.notes ?? existing.notes,
         updatedAt: new Date().toISOString(),
       })
       .where(eq(investmentHoldings.id, parsed.id))

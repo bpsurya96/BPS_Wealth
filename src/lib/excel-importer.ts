@@ -18,6 +18,7 @@ import {
 } from "@/db/schema";
 import { toMinorUnits } from "./currency";
 import { AppError } from "./errors";
+import { computeHoldingSummaryFromTransactions } from "./finance";
 import { guessSchemeOrTicker } from "./market-data";
 
 const MAX_SHEETS = 25;
@@ -766,10 +767,17 @@ export async function parseWorkbookBuffer(
           dateCols.push(c);
         }
       }
-      if (dateCols.length > 0 && r >= 2) {
-        const titleRow = allRows[r - 2];
+      if (dateCols.length > 0 && r >= 1) {
         for (const col of dateCols) {
-          const blockTitle = cellStr(titleRow, col) || cellStr(titleRow, col - 1);
+          let blockTitle = "";
+          for (let back = 1; back <= Math.min(2, r); back++) {
+            const candidateRow = allRows[r - back];
+            const cand = cellStr(candidateRow, col) || cellStr(candidateRow, col - 1);
+            if (cand && Number.isNaN(Number(cand.replace(/,/g, "")))) {
+              blockTitle = cand;
+              break;
+            }
+          }
           if (!blockTitle) continue;
           let matchedKey = "";
           for (const [k, h] of holdingsMap.entries()) {
@@ -1136,6 +1144,24 @@ export async function parseWorkbookBuffer(
     }
   }
 
+  // Populate holding totals from parsed transactions when summary values are absent/zero
+  for (const [key, holding] of holdingsMap.entries()) {
+    const hTxns = transactions.filter((t) => t.holdingKey === key);
+    if (hTxns.length === 0) continue;
+    if (holding.investedAmount === 0 || holding.units === 0 || holding.currentValue === 0) {
+      const computed = computeHoldingSummaryFromTransactions({
+        currency: holding.currency,
+        existingCurrentNav: holding.currentNav,
+        transactions: hTxns,
+      });
+      if (holding.investedAmount === 0) holding.investedAmount = computed.investedAmount;
+      if (holding.units === 0) holding.units = computed.units;
+      if (holding.avgNav === 0) holding.avgNav = computed.avgNav;
+      if (holding.currentNav === 0) holding.currentNav = computed.currentNav;
+      if (holding.currentValue === 0) holding.currentValue = computed.currentValue;
+    }
+  }
+
   return {
     fileSha256,
     fileName,
@@ -1197,7 +1223,8 @@ export function computeImportDiffPreview(
   const existingTxns = db.select().from(investmentTransactions).all();
   const txnKeys = new Set(
     existingTxns.map(
-      (t) => `${t.holdingId}|${t.date}|${t.type}|${toMinorUnits(t.amount, t.currency)}`
+      (t) =>
+        `${t.holdingId}|${t.date}|${t.type}|${toMinorUnits(t.amount, t.currency)}|${t.remarks}`
     )
   );
 
@@ -1273,7 +1300,7 @@ export function computeImportDiffPreview(
       (eh) => eh.name.toLowerCase() === t.holdingName.toLowerCase()
     );
     const k = hMatch
-      ? `${hMatch.id}|${t.date}|${t.type}|${toMinorUnits(t.amount, t.currency)}`
+      ? `${hMatch.id}|${t.date}|${t.type}|${toMinorUnits(t.amount, t.currency)}|${t.remarks}`
       : "";
     if (k && txnKeys.has(k)) breakdown.transactions.skip++;
     else breakdown.transactions.add++;
@@ -1460,6 +1487,7 @@ export function applyParsedImport(
       addedCount++;
     }
 
+    const affectedHoldingIds = new Set<number>();
     const existingTxns = new Set(
       db
         .select()
@@ -1467,13 +1495,13 @@ export function applyParsedImport(
         .all()
         .map(
           (t) =>
-            `${t.holdingId}|${t.date}|${t.type}|${toMinorUnits(t.amount, t.currency)}`
+            `${t.holdingId}|${t.date}|${t.type}|${toMinorUnits(t.amount, t.currency)}|${t.remarks}`
         )
     );
     for (const t of data.transactions) {
       const hid = holdingIdMap.get(t.holdingKey);
       if (!hid) continue;
-      const k = `${hid}|${t.date}|${t.type}|${toMinorUnits(t.amount, t.currency)}`;
+      const k = `${hid}|${t.date}|${t.type}|${toMinorUnits(t.amount, t.currency)}|${t.remarks}`;
       if (existingTxns.has(k)) {
         skippedCount++;
         continue;
@@ -1495,7 +1523,43 @@ export function applyParsedImport(
           remarks: t.remarks,
         })
         .run();
+      affectedHoldingIds.add(hid);
       addedCount++;
+    }
+
+    // Recompute holding totals from authoritative transaction ledger for every updated holding
+    for (const hid of affectedHoldingIds) {
+      const h = db
+        .select()
+        .from(investmentHoldings)
+        .where(eq(investmentHoldings.id, hid))
+        .get();
+      if (!h) continue;
+      const hTxns = db
+        .select()
+        .from(investmentTransactions)
+        .where(eq(investmentTransactions.holdingId, hid))
+        .all();
+      if (hTxns.length === 0) continue;
+
+      const summary = computeHoldingSummaryFromTransactions({
+        currency: h.currency,
+        existingCurrentNav: h.currentNav,
+        transactions: hTxns,
+      });
+      db.update(investmentHoldings)
+        .set({
+          units: summary.units,
+          investedAmount: summary.investedAmount,
+          investedMinor: summary.investedMinor,
+          avgNav: summary.avgNav,
+          currentNav: summary.currentNav,
+          currentValue: summary.currentValue,
+          currentValueMinor: summary.currentValueMinor,
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(investmentHoldings.id, hid))
+        .run();
     }
 
     const rentalIdMap = new Map<string, number>();

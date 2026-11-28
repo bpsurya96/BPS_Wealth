@@ -68,6 +68,7 @@ export const createHoldingSchema = z.object({
 export const patchHoldingSchema = z.object({
   id: z.coerce.number().int().positive(),
   name: z.string().trim().min(1).max(160).optional(),
+  platform: z.string().trim().max(100).optional(),
   schemeCode: z.string().trim().max(32).optional(),
   ticker: z.string().trim().max(32).optional(),
   plannedSip: z.coerce.number().finite().min(0).optional(),
@@ -75,7 +76,12 @@ export const patchHoldingSchema = z.object({
   currentValue: z.coerce.number().finite().min(0).optional(),
   units: z.coerce.number().finite().min(0).optional(),
   currentNav: z.coerce.number().finite().min(0).optional(),
+  interestRate: z.coerce.number().finite().min(0).max(100).optional(),
+  maturityDate: z.string().trim().max(20).optional(),
+  tenureMonths: z.coerce.number().int().min(0).max(1200).optional(),
+  isEmergencyFund: z.boolean().optional(),
   status: z.enum(["active", "matured", "closed"]).optional(),
+  notes: z.string().trim().max(500).optional(),
 });
 
 export const investmentTxnTypeSchema = z.enum([
@@ -98,6 +104,32 @@ export const createInvestmentTxnSchema = z.object({
   fxRate: z.coerce.number().finite().positive().optional(),
   employerAmount: z.coerce.number().finite().min(0).default(0),
   remarks: z.string().trim().max(300).default(""),
+});
+
+export const esopEntryInputSchema = z.object({
+  period: z.coerce.number().int().positive().optional(),
+  vestingDate: dateSchema,
+  optionsVested: z.coerce.number().int().min(0),
+  exercised: z.boolean().default(false),
+  sharePrice: z.coerce.number().finite().min(0),
+  strikePrice: z.coerce.number().finite().min(0),
+});
+
+export const createEsopScheduleSchema = z.union([
+  esopEntryInputSchema,
+  z.object({
+    replace: z.boolean().default(false),
+    entries: z.array(esopEntryInputSchema).min(1),
+  }),
+]);
+
+export const patchEsopEntrySchema = z.object({
+  entryId: z.coerce.number().int().positive(),
+  vestingDate: dateSchema.optional(),
+  optionsVested: z.coerce.number().int().min(0).optional(),
+  exercised: z.boolean().optional(),
+  sharePrice: z.coerce.number().finite().min(0).optional(),
+  strikePrice: z.coerce.number().finite().min(0).optional(),
 });
 
 export const createIncomeSchema = z.object({
@@ -207,21 +239,95 @@ export const aiChatSchema = z.object({
   allowRemoteEgress: z.boolean().default(false),
 });
 
+function normalizeNullishText(val: unknown): string | null {
+  if (val == null) return null;
+  if (Array.isArray(val)) {
+    const joined = val.map((v) => String(v ?? "").trim()).filter(Boolean).join("; ");
+    return joined || null;
+  }
+  if (typeof val === "number" || typeof val === "boolean") {
+    return String(val);
+  }
+  if (typeof val !== "string") return null;
+  const trimmed = val.trim();
+  if (!trimmed || /^(null|none|n\/a|na|unknown|not\s+available|-)$/i.test(trimmed)) {
+    return null;
+  }
+  return trimmed;
+}
+
+const aiOptionalString = z.preprocess(
+  (v) => normalizeNullishText(v),
+  z.string().nullable()
+).optional();
+
+const aiOptionalNumber = z.preprocess((v) => {
+  if (v == null) return null;
+  if (typeof v === "number") {
+    return Number.isFinite(v) && v >= 0 ? v : null;
+  }
+  if (typeof v === "string") {
+    const trimmed = v.trim();
+    if (!trimmed || /^(null|none|n\/a|na|unknown|-)$/i.test(trimmed)) {
+      return null;
+    }
+    const cleaned = trimmed.replace(/[₹$,\s]/g, "").replace(/^(rs\.?|inr|usd)/i, "");
+    const parsed = Number.parseFloat(cleaned);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+  }
+  return null;
+}, z.number().finite().min(0).nullable()).optional();
+
+function aiNormalizedEnum<T extends string>(
+  allowed: readonly T[],
+  aliases: Record<string, T> = {}
+) {
+  return z.preprocess((v) => {
+    const str = normalizeNullishText(v);
+    if (!str) return null;
+    const norm = str.toLowerCase().replace(/[\s-]+/g, "_");
+    if ((allowed as readonly string[]).includes(norm)) return norm;
+    if (aliases[norm]) return aliases[norm];
+    const spaceNorm = str.toLowerCase();
+    for (const [k, target] of Object.entries(aliases)) {
+      if (spaceNorm.includes(k.replace(/_/g, " "))) return target;
+    }
+    return null;
+  }, z.enum(allowed as [T, ...T[]]).nullable()).optional();
+}
+
 export const aiExtractedInsuranceSchema = z.object({
-  name: z.string().nullable().optional(),
-  policyType: z.enum(["term", "health", "life_endowment"]).nullable().optional(),
-  provider: z.string().nullable().optional(),
-  premiumAmount: z.number().finite().min(0).nullable().optional(),
-  premiumFrequency: z.enum(["annual", "monthly"]).nullable().optional(),
-  coverAmount: z.string().nullable().optional(),
-  expiryDate: z.string().nullable().optional(),
-  notes: z.string().nullable().optional(),
+  name: aiOptionalString,
+  policyType: aiNormalizedEnum(["term", "health", "life_endowment"], {
+    term_insurance: "term",
+    term_life: "term",
+    health_insurance: "health",
+    medical: "health",
+    mediclaim: "health",
+    life: "life_endowment",
+    endowment: "life_endowment",
+    ulip: "life_endowment",
+  }),
+  provider: aiOptionalString,
+  premiumAmount: aiOptionalNumber,
+  premiumFrequency: aiNormalizedEnum(["annual", "monthly"], {
+    annually: "annual",
+    yearly: "annual",
+    year: "annual",
+    per_year: "annual",
+    per_annum: "annual",
+    month: "monthly",
+    per_month: "monthly",
+  }),
+  coverAmount: aiOptionalString,
+  expiryDate: aiOptionalString,
+  notes: aiOptionalString,
 });
 
 export const aiExtractedInvestmentSchema = z.object({
-  name: z.string().nullable().optional(),
-  assetClass: z
-    .enum([
+  name: aiOptionalString,
+  assetClass: aiNormalizedEnum(
+    [
       "mutual_fund",
       "stock",
       "etf_us",
@@ -234,41 +340,79 @@ export const aiExtractedInvestmentSchema = z.object({
       "esop",
       "gold_silver",
       "bond",
-    ])
-    .nullable()
-    .optional(),
-  date: z.string().nullable().optional(),
-  amount: z.number().finite().min(0).nullable().optional(),
-  navOrPrice: z.number().finite().min(0).nullable().optional(),
-  units: z.number().finite().min(0).nullable().optional(),
-  remarks: z.string().nullable().optional(),
+    ],
+    {
+      mf: "mutual_fund",
+      mutual_funds: "mutual_fund",
+      equity: "stock",
+      stocks: "stock",
+      shares: "stock",
+      us_etf: "etf_us",
+      india_etf: "etf_in",
+      etf: "etf_in",
+      fixed_deposit: "fd",
+      recurring_deposit: "rd",
+      chit_fund: "chit",
+      gold: "gold_silver",
+      silver: "gold_silver",
+      sgb: "gold_silver",
+      bonds: "bond",
+    }
+  ),
+  date: aiOptionalString,
+  amount: aiOptionalNumber,
+  navOrPrice: aiOptionalNumber,
+  units: aiOptionalNumber,
+  remarks: aiOptionalString,
 });
 
 export const aiExtractedIncomeSchema = z.object({
-  date: z.string().nullable().optional(),
-  source: z.string().nullable().optional(),
-  category: z.enum(["salary", "rental", "dividend", "other"]).nullable().optional(),
-  inhandAmount: z.number().finite().min(0).nullable().optional(),
-  account: z.string().nullable().optional(),
-  notes: z.string().nullable().optional(),
+  date: aiOptionalString,
+  source: aiOptionalString,
+  category: aiNormalizedEnum(["salary", "rental", "dividend", "other"], {
+    rent: "rental",
+    dividends: "dividend",
+    interest: "other",
+    bonus: "salary",
+  }),
+  inhandAmount: aiOptionalNumber,
+  account: aiOptionalString,
+  notes: aiOptionalString,
 });
 
 export const aiExtractedLoanSchema = z.object({
-  name: z.string().nullable().optional(),
-  lender: z.string().nullable().optional(),
-  principalSanctioned: z.number().finite().min(0).nullable().optional(),
-  currentBalance: z.number().finite().min(0).nullable().optional(),
-  interestRate: z.number().finite().min(0).max(100).nullable().optional(),
-  emiAmount: z.number().finite().min(0).nullable().optional(),
-  notes: z.string().nullable().optional(),
+  name: aiOptionalString,
+  lender: aiOptionalString,
+  principalSanctioned: aiOptionalNumber,
+  currentBalance: aiOptionalNumber,
+  interestRate: z.preprocess((v) => {
+    if (v == null) return null;
+    if (typeof v === "string") {
+      const cleaned = v.replace(/[%\s,]/g, "");
+      const n = Number.parseFloat(cleaned);
+      return Number.isFinite(n) && n >= 0 && n <= 100 ? n : null;
+    }
+    return typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 100
+      ? v
+      : null;
+  }, z.number().finite().min(0).max(100).nullable()).optional(),
+  emiAmount: aiOptionalNumber,
+  notes: aiOptionalString,
 });
 
 export const aiExtractedReceiptOrBankSchema = z.object({
-  documentKind: z.enum(["receipt", "bank_statement", "financial_document"]).nullable().optional(),
-  date: z.string().nullable().optional(),
-  merchantOrInstitution: z.string().nullable().optional(),
-  totalAmount: z.number().finite().min(0).nullable().optional(),
-  currency: z.string().nullable().optional(),
-  summary: z.string().nullable().optional(),
-  notes: z.string().nullable().optional(),
+  documentKind: aiNormalizedEnum(
+    ["receipt", "bank_statement", "financial_document"],
+    {
+      bank: "bank_statement",
+      statement: "bank_statement",
+      invoice: "receipt",
+    }
+  ),
+  date: aiOptionalString,
+  merchantOrInstitution: aiOptionalString,
+  totalAmount: aiOptionalNumber,
+  currency: aiOptionalString,
+  summary: aiOptionalString,
+  notes: aiOptionalString,
 });

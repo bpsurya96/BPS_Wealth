@@ -6,6 +6,7 @@ import {
 import { requireAdminSession } from "@/lib/auth";
 import { verifyCsrf } from "@/lib/csrf";
 import { AppError, handleApiError } from "@/lib/errors";
+import { extractTextFromPdfBuffer } from "@/lib/pdf-extract";
 import {
   ALLOWED_AI_EXTRACT_EXTS,
   MAX_AI_IMAGE_BYTES,
@@ -48,7 +49,8 @@ export async function POST(req: NextRequest) {
       checkImageDimensions: true,
     });
 
-    if (!validated.isImage && validated.buffer.length > MAX_AI_TEXT_BYTES) {
+    const isPdf = validated.ext === ".pdf";
+    if (!validated.isImage && !isPdf && validated.buffer.length > MAX_AI_TEXT_BYTES) {
       throw new AppError(
         "Text/CSV document exceeds 2 MB extraction limit",
         413,
@@ -56,14 +58,32 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    let textContent: string | undefined;
+    if (isPdf) {
+      const pdfResult = await extractTextFromPdfBuffer(validated.buffer);
+      if (pdfResult.text.length < 15) {
+        return NextResponse.json({
+          ok: false,
+          model: "pdf-extractor",
+          requiresReview: true,
+          isRemote: false,
+          extracted: null,
+          unknownFields: [],
+          rawText:
+            "This PDF appears to be scanned (no selectable text found). Please upload a screenshot or PNG/JPG/WEBP image for Vision AI extraction.",
+        });
+      }
+      textContent = pdfResult.text;
+    } else if (!validated.isImage) {
+      textContent = validated.buffer.toString("utf-8");
+    }
+
     const result = await extractStructuredDataWithVision({
       base64Image: validated.isImage
         ? validated.buffer.toString("base64")
         : undefined,
       mimeType: validated.canonicalMime,
-      textContent: validated.isImage
-        ? undefined
-        : validated.buffer.toString("utf-8"),
+      textContent,
       targetType,
       allowRemoteEgress,
       signal: req.signal,

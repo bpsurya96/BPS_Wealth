@@ -20,6 +20,7 @@ import {
   buildHoldingCashflowsNative,
   buildPortfolioCashflowsInr,
   calculateXIRR,
+  computeUpcomingMaturities,
   holdingInrValues,
   normalizeAnnualInsurancePremium,
 } from "@/lib/finance";
@@ -61,6 +62,7 @@ export function getDashboardPortfolioData() {
 
   let totalInvestedInrMinor = 0;
   let totalPortfolioInrMinor = 0;
+  let totalGainInrMinor = 0;
   let totalPlannedSipInrMinor = 0;
   let emergencyInvestedInrMinor = 0;
 
@@ -71,6 +73,7 @@ export function getDashboardPortfolioData() {
     const vals = holdingInrValues(h, usdInrRate);
     totalInvestedInrMinor += vals.investedInrMinor;
     totalPortfolioInrMinor += vals.currentInrMinor;
+    totalGainInrMinor += toMinorUnits(vals.gainInr, "INR");
     totalPlannedSipInrMinor += vals.plannedSipInrMinor;
 
     if (h.isEmergencyFund || h.assetClass === "fd" || h.assetClass === "rd") {
@@ -86,6 +89,7 @@ export function getDashboardPortfolioData() {
 
   const totalInvestedInr = fromMinorUnits(totalInvestedInrMinor, "INR");
   const totalPortfolioInr = fromMinorUnits(totalPortfolioInrMinor, "INR");
+  const totalGainInr = fromMinorUnits(totalGainInrMinor, "INR");
   const totalPlannedSipInr = fromMinorUnits(totalPlannedSipInrMinor, "INR");
   const emergencyInvestedInr = fromMinorUnits(emergencyInvestedInrMinor, "INR");
 
@@ -285,21 +289,26 @@ export function getDashboardPortfolioData() {
       };
     });
 
+  const { upcomingMaturities, nextFdMaturity } = computeUpcomingMaturities({
+    holdings,
+    usdInrRate,
+  });
+
   return {
     usdInrRate,
     lastNavRefreshAt: getSetting("last_nav_refresh_at", ""),
     lastBackupAt: getSetting("last_backup_at", ""),
+    nextFdMaturity,
+    upcomingMaturities,
     metrics: {
       totalInvestedInr,
       totalPortfolioInr,
       otherFinancialAssetsInr,
       physicalAssetsInr,
       totalAssetsInr,
-      totalGainInr: totalPortfolioInr - totalInvestedInr,
+      totalGainInr,
       totalGainPct:
-        totalInvestedInr > 0
-          ? (totalPortfolioInr - totalInvestedInr) / totalInvestedInr
-          : 0,
+        totalInvestedInr > 0 ? totalGainInr / totalInvestedInr : 0,
       portfolioXirr,
       totalPlannedSipInr,
       totalLiabilitiesInr,

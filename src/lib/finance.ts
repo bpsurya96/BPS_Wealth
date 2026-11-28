@@ -1,6 +1,7 @@
 import {
   convertMinorToInrMinor,
   fromMinorUnits,
+  reduceCostBasisMinor,
   roundNavOrRate,
   toMinorUnits,
 } from "./currency";
@@ -166,6 +167,7 @@ export function holdingCurrentNative(holding: {
 
 export function holdingInrValues(
   holding: {
+    assetClass?: string;
     currency: string;
     investedAmount: number;
     currentValue: number;
@@ -201,8 +203,12 @@ export function holdingInrValues(
 
   const investedInr = fromMinorUnits(investedInrMinor, "INR");
   const currentInr = fromMinorUnits(currentInrMinor, "INR");
-  const gainInr = fromMinorUnits(currentInrMinor - investedInrMinor, "INR");
-  const gainPct = investedInr > 0 ? gainInr / investedInr : 0;
+  // Unpriced ESOPs keep current value and profit at 0 while showing total invested.
+  const isUnpricedEsop = holding.assetClass === "esop" && currentInrMinor === 0;
+  const gainInr = isUnpricedEsop
+    ? 0
+    : fromMinorUnits(currentInrMinor - investedInrMinor, "INR");
+  const gainPct = isUnpricedEsop || investedInr <= 0 ? 0 : gainInr / investedInr;
 
   return {
     fx: roundNavOrRate(fx, 4),
@@ -325,4 +331,176 @@ export function normalizeAnnualInsurancePremium(
   return frequency.toLowerCase() === "monthly"
     ? premiumAmount * 12
     : premiumAmount;
+}
+
+export function computeHoldingSummaryFromTransactions(params: {
+  currency: string;
+  existingCurrentNav?: number;
+  transactions: Array<{
+    id?: number;
+    date: string;
+    type: string;
+    amount: number;
+    navOrPrice: number;
+    units: number;
+  }>;
+}) {
+  const sorted = [...params.transactions].sort((a, b) => {
+    const cmp = a.date.localeCompare(b.date);
+    if (cmp !== 0) return cmp;
+    return (a.id ?? 0) - (b.id ?? 0);
+  });
+
+  let units = 0;
+  let investedMinor = 0;
+  let interestMinor = 0;
+  let latestNav = 0;
+
+  for (const t of sorted) {
+    const type = t.type.toLowerCase();
+    const amtMinor = toMinorUnits(Math.abs(t.amount), params.currency);
+    const txUnits =
+      t.units > 0
+        ? t.units
+        : t.navOrPrice > 0 && type !== "dividend" && type !== "interest_payout"
+          ? Math.abs(t.amount) / t.navOrPrice
+          : 0;
+
+    if (t.navOrPrice > 0) {
+      latestNav = t.navOrPrice;
+    }
+
+    if (type === "sell" || type === "redemption" || type === "withdrawal") {
+      if (units > 0 && txUnits > 0) {
+        investedMinor = reduceCostBasisMinor(investedMinor, units, txUnits);
+      } else {
+        investedMinor = Math.max(0, investedMinor - amtMinor);
+      }
+      units = Math.max(0, units - txUnits);
+    } else if (type === "interest") {
+      interestMinor += amtMinor;
+    } else if (type === "dividend" || type === "interest_payout") {
+      // Cash payout: does not alter units or contributed cost basis
+    } else {
+      // sip | buy | installment | employer_contribution
+      units += txUnits;
+      investedMinor += amtMinor;
+    }
+  }
+
+  const investedAmount = fromMinorUnits(investedMinor, params.currency);
+  const avgNav = units > 0 ? investedAmount / units : 0;
+  const currentNav =
+    params.existingCurrentNav && params.existingCurrentNav > 0
+      ? params.existingCurrentNav
+      : latestNav;
+  const currentValue =
+    units > 0 && currentNav > 0
+      ? units * currentNav
+      : fromMinorUnits(investedMinor + interestMinor, params.currency);
+  const currentValueMinor = toMinorUnits(currentValue, params.currency);
+
+  return {
+    units,
+    investedAmount,
+    investedMinor,
+    avgNav,
+    currentNav,
+    currentValue,
+    currentValueMinor,
+  };
+}
+
+export interface UpcomingMaturityItem {
+  id: number;
+  name: string;
+  assetClass: string;
+  platform: string;
+  maturityDate: string;
+  interestRate: number;
+  investedInr: number;
+  currentInr: number;
+  isEmergencyFund: boolean;
+  daysRemaining: number;
+}
+
+function parseIsoDayUtcMs(dateStr: string): number | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr.trim());
+  if (!m) return null;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  const ms = Date.UTC(year, month - 1, day);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * Returns active holdings with valid ISO maturity dates ordered chronologically,
+ * along with the first upcoming FD maturity (`nextFdMaturity`).
+ */
+export function computeUpcomingMaturities(params: {
+  holdings: Array<{
+    id: number;
+    name: string;
+    assetClass: string;
+    platform?: string | null;
+    maturityDate?: string | null;
+    interestRate?: number | null;
+    currency: string;
+    investedAmount: number;
+    currentValue: number;
+    investedMinor?: number | null;
+    currentValueMinor?: number | null;
+    units: number;
+    currentNav: number;
+    plannedSip?: number | null;
+    isEmergencyFund?: boolean | null;
+    status: string;
+  }>;
+  usdInrRate: number;
+  referenceDate?: string; // YYYY-MM-DD, defaults to today UTC
+}): {
+  upcomingMaturities: UpcomingMaturityItem[];
+  nextFdMaturity: UpcomingMaturityItem | null;
+} {
+  const todayStr = params.referenceDate || new Date().toISOString().slice(0, 10);
+  const todayMs = parseIsoDayUtcMs(todayStr) ?? Date.now();
+  const MS_PER_DAY = 86_400_000;
+
+  const items: UpcomingMaturityItem[] = [];
+  for (const h of params.holdings) {
+    if (h.status !== "active") continue;
+    const matDate = (h.maturityDate ?? "").trim();
+    const matMs = parseIsoDayUtcMs(matDate);
+    if (matMs === null) continue;
+
+    const daysRemaining = Math.round((matMs - todayMs) / MS_PER_DAY);
+    const vals = holdingInrValues(
+      { ...h, plannedSip: h.plannedSip ?? 0 },
+      params.usdInrRate
+    );
+    items.push({
+      id: h.id,
+      name: h.name,
+      assetClass: h.assetClass,
+      platform: h.platform ?? "",
+      maturityDate: matDate,
+      interestRate: h.interestRate ?? 0,
+      investedInr: Math.round(vals.investedInr),
+      currentInr: Math.round(vals.currentInr),
+      isEmergencyFund: Boolean(h.isEmergencyFund),
+      daysRemaining,
+    });
+  }
+
+  items.sort((a, b) => a.maturityDate.localeCompare(b.maturityDate));
+
+  const fdItems = items.filter((i) => i.assetClass === "fd");
+  const nextFdMaturity =
+    fdItems.find((i) => i.daysRemaining >= 0) ?? fdItems[0] ?? null;
+
+  return {
+    upcomingMaturities: items,
+    nextFdMaturity,
+  };
 }

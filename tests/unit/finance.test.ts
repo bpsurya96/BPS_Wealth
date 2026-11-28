@@ -10,6 +10,7 @@ import {
   buildHoldingCashflowsNative,
   buildPortfolioCashflowsInr,
   calculateXIRR,
+  computeUpcomingMaturities,
   holdingInrValues,
   normalizeAnnualInsurancePremium,
 } from "@/lib/finance";
@@ -192,5 +193,87 @@ describe("Insurance Premium Normalization", () => {
   it("normalizes monthly and annual premiums to annual totals", () => {
     expect(normalizeAnnualInsurancePremium(2000, "monthly")).toBe(24000);
     expect(normalizeAnnualInsurancePremium(25000, "annual")).toBe(25000);
+  });
+});
+
+describe("Upcoming FD Maturity Notifications", () => {
+  it("orders active maturities chronologically and picks the first upcoming FD", () => {
+    const res = computeUpcomingMaturities({
+      holdings: [
+        {
+          id: 1,
+          name: "Sample FD Later",
+          assetClass: "fd",
+          platform: "Sample Bank A",
+          maturityDate: "2027-06-15",
+          interestRate: 8.5,
+          currency: "INR",
+          investedAmount: 50000,
+          currentValue: 50000,
+          units: 0,
+          currentNav: 0,
+          isEmergencyFund: true,
+          status: "active",
+        },
+        {
+          id: 2,
+          name: "Sample FD Closed",
+          assetClass: "fd",
+          platform: "Sample Bank A",
+          maturityDate: "2026-12-01",
+          interestRate: 8.0,
+          currency: "INR",
+          investedAmount: 25000,
+          currentValue: 25000,
+          units: 0,
+          currentNav: 0,
+          isEmergencyFund: true,
+          status: "closed",
+        },
+        {
+          id: 3,
+          name: "Sample FD Soonest",
+          assetClass: "fd",
+          platform: "Sample Bank B",
+          maturityDate: "2026-12-04",
+          interestRate: 8.6,
+          currency: "INR",
+          investedAmount: 50000,
+          currentValue: 50000,
+          units: 0,
+          currentNav: 0,
+          isEmergencyFund: true,
+          status: "active",
+        },
+      ],
+      usdInrRate: 84.5,
+      referenceDate: "2026-11-26",
+    });
+
+    expect(res.upcomingMaturities.length).toBe(2);
+    expect(res.nextFdMaturity?.id).toBe(3);
+    expect(res.nextFdMaturity?.daysRemaining).toBe(8);
+  });
+});
+
+describe("Unpriced ESOP Valuation", () => {
+  it("keeps currentInr and gainInr at zero while preserving investedInr", () => {
+    const vals = holdingInrValues(
+      {
+        assetClass: "esop",
+        currency: "USD",
+        investedAmount: 207.9,
+        currentValue: 0,
+        units: 14,
+        currentNav: 0,
+        plannedSip: 0,
+        status: "active",
+      },
+      92.44
+    );
+    expect(vals.investedInr).toBeCloseTo(19218.28, 2);
+    expect(vals.currentInr).toBe(0);
+    expect(vals.gainInr).toBe(0);
+    expect(vals.gainPct).toBe(0);
   });
 });

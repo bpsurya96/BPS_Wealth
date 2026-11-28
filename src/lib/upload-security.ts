@@ -23,6 +23,7 @@ export const ALLOWED_DOCUMENT_EXTS = new Set([
 export const ALLOWED_SPREADSHEET_EXTS = new Set([".xlsx", ".csv"]);
 
 export const ALLOWED_AI_EXTRACT_EXTS = new Set([
+  ".pdf",
   ".png",
   ".jpg",
   ".jpeg",
