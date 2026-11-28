@@ -11,6 +11,10 @@ Schema evolution is governed by versioned SQL migrations under `drizzle/` execut
    - Safely appends `*_minor` integer columns, `documents.sha256`, `income_entries.rental_payment_id`, and `net_worth_snapshots` unknown-liability columns (`liabilities_known`, `source`, nullable `total_liabilities_minor`/`net_worth_minor`).
    - Backfills all `*_minor` columns from existing `REAL` columns via `CAST(ROUND(col * 100.0) AS INTEGER)`.
 3. `drizzle/0003_indexes_and_dedup.sql`: Creates performance and lookup indexes across transaction, income, rental, loan, document, import, and session tables.
+4. `drizzle/0004_esop_vesting_schedule.sql`: Adds `esop_vesting_entries` for period-by-period ESOP vesting and exercise tracking.
+5. `drizzle/0005_wealth_planning.sql`:
+   - Extends `financial_goals` idempotently with `description`, `priority`, `expected_annual_return`, `inflation_rate`, `monthly_contribution`, `monthly_contribution_minor`, `status`, and `updated_at`.
+   - Adds `goal_investment_allocations`, `goal_contributions`, `goal_snapshots`, `planning_profiles`, `financial_scenarios`, `monthly_wealth_snapshots`, and `net_worth_milestones` (with default preset milestones).
 
 ---
 
@@ -19,7 +23,7 @@ Schema evolution is governed by versioned SQL migrations under `drizzle/` execut
 - **Automatic Pre-Migration Backup**: Whenever pending migrations are detected on an existing non-empty database, `createPreMigrationBackup()` executes `VACUUM INTO '<backupDir>/pre_migration_<timestamp>_<pid>.db'` before any DDL runs.
 - **Idempotent Column Guards**: `executeStatementSafely()` inspects `PRAGMA table_info` before running `ALTER TABLE ... ADD COLUMN` so partially migrated databases never fail or lose data.
 - **Transactional Execution**: Each migration file executes inside a SQLite transaction and records its version, filename, SHA-256 checksum, and timestamp in `schema_migrations`.
-- **Post-Migration Validation**: `validateDatabaseSchema()` runs `PRAGMA integrity_check` and verifies all 17 required application tables exist.
+- **Post-Migration Validation**: `validateDatabaseSchema()` runs `PRAGMA integrity_check` and verifies all required application tables exist.
 
 ---
 

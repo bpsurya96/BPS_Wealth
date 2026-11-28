@@ -12,6 +12,10 @@ import {
   documents,
   esopVestingEntries,
   financialGoals,
+  financialScenarios,
+  goalContributions,
+  goalInvestmentAllocations,
+  goalSnapshots,
   incomeEntries,
   insurancePolicies,
   investmentCategories,
@@ -19,7 +23,10 @@ import {
   investmentTransactions,
   loans,
   loanTransactions,
+  monthlyWealthSnapshots,
+  netWorthMilestones,
   netWorthSnapshots,
+  planningProfiles,
   rentalPayments,
   rentalProperties,
 } from "@/db/schema";
@@ -127,6 +134,13 @@ export function collectRecordCounts(
     "asset_register",
     "net_worth_snapshots",
     "financial_goals",
+    "goal_investment_allocations",
+    "goal_contributions",
+    "goal_snapshots",
+    "planning_profiles",
+    "financial_scenarios",
+    "monthly_wealth_snapshots",
+    "net_worth_milestones",
     "investment_categories",
     "documents",
     "esop_vesting_entries",
@@ -540,6 +554,13 @@ export function exportAllDataJson() {
     assets: db.select().from(assetRegister).all(),
     netWorthSnapshots: db.select().from(netWorthSnapshots).all(),
     financialGoals: db.select().from(financialGoals).all(),
+    goalInvestmentAllocations: db.select().from(goalInvestmentAllocations).all(),
+    goalContributions: db.select().from(goalContributions).all(),
+    goalSnapshots: db.select().from(goalSnapshots).all(),
+    planningProfiles: db.select().from(planningProfiles).all(),
+    financialScenarios: db.select().from(financialScenarios).all(),
+    monthlyWealthSnapshots: db.select().from(monthlyWealthSnapshots).all(),
+    netWorthMilestones: db.select().from(netWorthMilestones).all(),
     documents: db.select().from(documents).all(),
     esopVestingEntries: db.select().from(esopVestingEntries).all(),
   };
@@ -575,6 +596,30 @@ export async function exportWorkbookBuffer(): Promise<Buffer> {
   appendSheet("Assets", data.assets as Array<Record<string, unknown>>);
   appendSheet("Net_Worth", data.netWorthSnapshots as Array<Record<string, unknown>>);
   appendSheet("Goals", data.financialGoals as Array<Record<string, unknown>>);
+  appendSheet(
+    "Goal_Allocations",
+    data.goalInvestmentAllocations as Array<Record<string, unknown>>
+  );
+  appendSheet(
+    "Goal_Contributions",
+    data.goalContributions as Array<Record<string, unknown>>
+  );
+  appendSheet(
+    "Planning_Profiles",
+    data.planningProfiles as Array<Record<string, unknown>>
+  );
+  appendSheet(
+    "Scenarios",
+    data.financialScenarios as Array<Record<string, unknown>>
+  );
+  appendSheet(
+    "Wealth_Scorecard",
+    data.monthlyWealthSnapshots as Array<Record<string, unknown>>
+  );
+  appendSheet(
+    "Net_Worth_Milestones",
+    data.netWorthMilestones as Array<Record<string, unknown>>
+  );
   appendSheet(
     "ESOP_Vesting",
     data.esopVestingEntries as Array<Record<string, unknown>>

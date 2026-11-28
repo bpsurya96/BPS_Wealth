@@ -10,7 +10,20 @@ import {
   aiExtractedReceiptOrBankSchema,
 } from "./validation";
 import { getDashboardPortfolioData } from "./../services/portfolio";
+import {
+  getFireAndRetirementData,
+  getGoalsDashboardData,
+  getMonthlyWealthScorecardData,
+  getNetWorthMilestoneData,
+  getPortfolioRiskAndLiquidityData,
+  getSimulationBaseline,
+} from "./../services/wealth-planning";
 import { formatCompactINR, formatINR, formatPercent } from "./utils";
+import {
+  DEFAULT_WHAT_IF_ADJUSTMENTS,
+  runWhatIfSimulation,
+  SimulationBaseline,
+} from "./wealth-calculations";
 
 export type ExtractionTargetType =
   | "insurance"
@@ -67,14 +80,88 @@ export interface PortfolioSnapshot {
   }>;
   goalsSummary: Array<{
     name: string;
+    category: string;
     targetAmount: number;
     currentAmount: number;
+    allocatedAmount: number;
+    standaloneAmount: number;
+    targetDate: string;
+    monthlyContribution: number;
+    requiredMonthly: number;
+    health: string;
+    allocations: Array<{ holdingName: string; effectiveInr: number }>;
   }>;
+  planningContext: {
+    fire: {
+      investableCorpusInr: number;
+      monthlyExpenses: number;
+      expectedReturnPct: number;
+      inflationPct: number;
+      withdrawalRatePct: number;
+      requiredCorpusToday: number;
+      currentFireProgressPct: number;
+      estimatedFireYear: number | null;
+      estimatedFireAge: number | null;
+      monthlyInvestmentRequired: number;
+    };
+    retirement: {
+      yearsRemaining: number;
+      requiredRetirementCorpus: number;
+      projectedCorpus: number;
+      monthlyInvestmentShortfall: number;
+      readinessPct: number;
+    };
+    emergency: {
+      recommendedCorpus: number;
+      actualEmergencyValue: number;
+      coverageMonths: number | null;
+      coverageMonthsTarget: number;
+      remainingAmount: number;
+    };
+    risk: {
+      liquidAssetsInr: number;
+      liquidAssetsPct: number;
+      topFiveSharePct: number;
+      concentrationAlerts: Array<{
+        type: string;
+        subject: string;
+        pct: number;
+        message: string;
+      }>;
+      maturityMismatches: Array<{
+        goalName: string;
+        holdingName: string;
+        holdingMaturityDate: string;
+        goalTargetDate: string;
+      }>;
+    };
+    scorecard: {
+      month: string;
+      totalIncome: number;
+      invContributions: number;
+      investmentRatePct: number | null;
+      savingsRatePct: number | null;
+      monthlySurplus: number | null;
+    };
+    milestones: {
+      currentNetWorthInr: number;
+      nextMilestoneLabel: string | null;
+      nextMilestoneTarget: number | null;
+      estimatedDate: string | null;
+    };
+    simulatorBaseline: SimulationBaseline;
+  };
 }
 
 export function buildPortfolioSnapshot(): PortfolioSnapshot {
   const dash = getDashboardPortfolioData();
   const m = dash.metrics;
+  const goalsData = getGoalsDashboardData();
+  const fireData = getFireAndRetirementData();
+  const riskData = getPortfolioRiskAndLiquidityData();
+  const scorecard = getMonthlyWealthScorecardData();
+  const milestones = getNetWorthMilestoneData();
+  const simBaseline = getSimulationBaseline();
 
   return {
     usdInrRate: dash.usdInrRate,
@@ -88,8 +175,8 @@ export function buildPortfolioSnapshot(): PortfolioSnapshot {
     portfolioXirr: m.portfolioXirr,
     totalLiabilitiesInr: m.totalLiabilitiesInr,
     totalPlannedSipInr: m.totalPlannedSipInr,
-    emergencyInvestedInr: m.emergencyInvestedInr,
-    emergencyTargetInr: m.emergencyTargetInr,
+    emergencyInvestedInr: riskData.emergency.actualEmergencyValue,
+    emergencyTargetInr: riskData.emergency.recommendedCorpus,
     mainIncomeTotal: m.mainIncomeTotal,
     rentalIncomeTotal: m.rentalIncomeTotal,
     dividendIncomeTotal: m.dividendIncomeTotal,
@@ -113,11 +200,86 @@ export function buildPortfolioSnapshot(): PortfolioSnapshot {
       expiryDate: p.expiryDate,
       docCount: p.docCount,
     })),
-    goalsSummary: dash.goals.map((g) => ({
+    goalsSummary: goalsData.goals.map((g) => ({
       name: g.name,
+      category: g.category,
       targetAmount: g.targetAmount,
-      currentAmount: g.currentAmount,
+      currentAmount: g.projection.currentAmount,
+      allocatedAmount: g.allocatedAmount,
+      standaloneAmount: g.standaloneAmount,
+      targetDate: g.targetDate ?? "",
+      monthlyContribution: g.monthlyContribution,
+      requiredMonthly: g.projection.requiredMonthlyInflationAdjusted,
+      health: g.projection.health,
+      allocations: g.allocations.map((a) => ({
+        holdingName: a.holdingName,
+        effectiveInr: a.effectiveInr,
+      })),
     })),
+    planningContext: {
+      fire: {
+        investableCorpusInr: fireData.corpusInfo.investableCorpusInr,
+        monthlyExpenses: fireData.profile.monthlyExpenses,
+        expectedReturnPct: fireData.profile.expectedReturnPct,
+        inflationPct: fireData.profile.expenseInflationPct,
+        withdrawalRatePct: fireData.profile.safeWithdrawalRatePct,
+        requiredCorpusToday: fireData.fire.requiredCorpusToday,
+        currentFireProgressPct: fireData.fire.currentFireProgressPct,
+        estimatedFireYear: fireData.fire.estimatedFireYear,
+        estimatedFireAge: fireData.fire.estimatedFireAge,
+        monthlyInvestmentRequired: fireData.fire.monthlyInvestmentRequired,
+      },
+      retirement: {
+        yearsRemaining: fireData.retirement.yearsRemaining,
+        requiredRetirementCorpus:
+          fireData.retirement.requiredRetirementCorpus,
+        projectedCorpus: fireData.retirement.projectedCorpus,
+        monthlyInvestmentShortfall:
+          fireData.retirement.monthlyInvestmentShortfall,
+        readinessPct: fireData.retirement.readinessPct,
+      },
+      emergency: {
+        recommendedCorpus: riskData.emergency.recommendedCorpus,
+        actualEmergencyValue: riskData.emergency.actualEmergencyValue,
+        coverageMonths: riskData.emergency.coverageMonths,
+        coverageMonthsTarget: riskData.emergency.coverageMonthsTarget,
+        remainingAmount: riskData.emergency.remainingAmount,
+      },
+      risk: {
+        liquidAssetsInr: riskData.risk.liquidAssetsInr,
+        liquidAssetsPct: riskData.risk.liquidAssetsPct,
+        topFiveSharePct: riskData.risk.topFiveSharePct,
+        concentrationAlerts: riskData.risk.concentrationAlerts.map((a) => ({
+          type: a.type,
+          subject: a.subject,
+          pct: a.pct,
+          message: a.message,
+        })),
+        maturityMismatches: riskData.risk.maturityMismatches.map((mm) => ({
+          goalName: mm.goalName,
+          holdingName: mm.holdingName,
+          holdingMaturityDate: mm.holdingMaturityDate,
+          goalTargetDate: mm.goalTargetDate,
+        })),
+      },
+      scorecard: {
+        month: scorecard.currentMonth,
+        totalIncome: scorecard.current.totalIncome,
+        invContributions:
+          scorecard.current.invContributions +
+          scorecard.current.employerContributions,
+        investmentRatePct: scorecard.current.investmentRatePct,
+        savingsRatePct: scorecard.current.savingsRatePct,
+        monthlySurplus: scorecard.current.monthlySurplus,
+      },
+      milestones: {
+        currentNetWorthInr: milestones.currentNetWorthInr,
+        nextMilestoneLabel: milestones.nextMilestone?.label ?? null,
+        nextMilestoneTarget: milestones.nextMilestone?.targetAmount ?? null,
+        estimatedDate: milestones.nextMilestone?.estimatedDate ?? null,
+      },
+      simulatorBaseline: simBaseline,
+    },
   };
 }
 
@@ -143,7 +305,44 @@ function buildMinimizedSnapshot(snap: PortfolioSnapshot, minimizePii: boolean) {
     goalsSummary: snap.goalsSummary.map((g, i) => ({
       ...g,
       name: `Goal_${i + 1}`,
+      allocations: g.allocations.map((a, ai) => ({
+        holdingName: `Holding_Ref_${ai + 1}`,
+        effectiveInr: a.effectiveInr,
+      })),
     })),
+    planningContext: {
+      ...snap.planningContext,
+      risk: {
+        ...snap.planningContext.risk,
+        concentrationAlerts: snap.planningContext.risk.concentrationAlerts.map(
+          (a, idx) => ({
+            type: a.type,
+            subject: `Subject_${idx + 1}`,
+            pct: a.pct,
+            message: `${a.type} concentration at ${a.pct}%`,
+          })
+        ),
+        maturityMismatches: snap.planningContext.risk.maturityMismatches.map(
+          (mm, idx) => ({
+            goalName: `Goal_Ref_${idx + 1}`,
+            holdingName: `Holding_Ref_${idx + 1}`,
+            holdingMaturityDate: mm.holdingMaturityDate,
+            goalTargetDate: mm.goalTargetDate,
+          })
+        ),
+      },
+      simulatorBaseline: {
+        ...snap.planningContext.simulatorBaseline,
+        loans: snap.planningContext.simulatorBaseline.loans.map((l, idx) => ({
+          ...l,
+          name: `Loan_${idx + 1}`,
+        })),
+        goals: snap.planningContext.simulatorBaseline.goals.map((g, idx) => ({
+          ...g,
+          name: `Goal_${idx + 1}`,
+        })),
+      },
+    },
   };
 }
 
@@ -288,6 +487,53 @@ export function generateDeterministicInsights(
     }
   }
 
+  if (scope === "goals" || scope === "overview") {
+    const atRisk = snap.goalsSummary.filter(
+      (g) => g.health === "at_risk" || g.health === "attention"
+    );
+    if (atRisk.length > 0) {
+      insights.push(
+        `${atRisk.length} financial goal(s) need attention: ${atRisk
+          .slice(0, 3)
+          .map((g) => g.name)
+          .join(", ")}.`
+      );
+    }
+  }
+
+  if (scope === "fire") {
+    const f = snap.planningContext.fire;
+    if (f.monthlyExpenses <= 0) {
+      insights.push(
+        "Enter your monthly expenses to unlock FIRE corpus and target independence year projections."
+      );
+    } else {
+      insights.push(
+        `Current investable corpus (${formatCompactINR(f.investableCorpusInr)}) covers ${formatPercent(f.currentFireProgressPct)} of today's FIRE target (${formatCompactINR(f.requiredCorpusToday)} at ${f.withdrawalRatePct}% SWR).`
+      );
+    }
+  }
+
+  if (scope === "portfolio-risk" || scope === "overview") {
+    const alerts = snap.planningContext.risk.concentrationAlerts;
+    if (alerts.length > 0) {
+      insights.push(alerts[0].message);
+    }
+    const mismatches = snap.planningContext.risk.maturityMismatches;
+    if (mismatches.length > 0) {
+      insights.push(
+        `${mismatches.length} goal maturity mismatch(es) detected where linked holdings mature after the goal date.`
+      );
+    }
+  }
+
+  if (scope === "scorecard") {
+    const sc = snap.planningContext.scorecard;
+    insights.push(
+      `In ${sc.month}, recorded income is ${formatCompactINR(sc.totalIncome)} with ${formatCompactINR(sc.invContributions)} in investment contributions.`
+    );
+  }
+
   return insights;
 }
 
@@ -298,8 +544,117 @@ function buildLocalFallbackReply(
 ): string {
   const q = prompt.toLowerCase();
   const lines: string[] = [];
+  const pc = snap.planningContext;
 
+  // Deterministic What-If simulation queries (e.g. "increase SIP by 5000", "salary increases by 10%")
   if (
+    /what\s+if|what\s+happens|simulat/i.test(q) &&
+    (/sip|salary|expense|loan|prepay|market/i.test(q))
+  ) {
+    const adj = { ...DEFAULT_WHAT_IF_ADJUSTMENTS };
+    const sipMatch = q.match(/sip[^0-9]*([0-9,]+)/i);
+    const salMatch = q.match(/salary[^0-9]*([0-9]+(?:\.[0-9]+)?)\s*%/i);
+    if (sipMatch) {
+      adj.sipDeltaMonthly = Number(sipMatch[1].replace(/,/g, "")) || 5000;
+    }
+    if (salMatch) {
+      adj.salaryChangePct = Number(salMatch[1]) || 10;
+    }
+    const sim = runWhatIfSimulation(pc.simulatorBaseline, adj);
+    lines.push("Deterministic What-If Simulation (isolated from live records):");
+    lines.push(
+      `• Actual Starting Investable Corpus: ${formatCompactINR(sim.baseline.startingCorpus)} | Actual Monthly SIP: ${formatINR(sim.baseline.monthlySip)}`
+    );
+    lines.push(
+      `• Scenario 10-Year Projected Net Worth: ${formatCompactINR(sim.scenario.horizons.y10.netWorth)} (${sim.deltas.y10NetWorthDelta >= 0 ? "+" : ""}${formatCompactINR(sim.deltas.y10NetWorthDelta)} vs baseline ${formatCompactINR(sim.baseline.horizons.y10.netWorth)})`
+    );
+    lines.push(
+      `• Scenario 20-Year Projected Net Worth: ${formatCompactINR(sim.scenario.horizons.y20.netWorth)} (${sim.deltas.y20NetWorthDelta >= 0 ? "+" : ""}${formatCompactINR(sim.deltas.y20NetWorthDelta)} vs baseline)`
+    );
+    lines.push(
+      `• Projected FIRE Timeline: ${sim.scenario.fireYears !== null ? `${sim.scenario.fireYears} years` : "20+ years"} (Assumptions: ${pc.simulatorBaseline.expectedReturnPct}% return, ${pc.simulatorBaseline.inflationPct}% inflation, ${pc.simulatorBaseline.withdrawalRatePct}% SWR).`
+    );
+  } else if (
+    /\b(fire|financially independent|financial independence|retire|retirement)\b/.test(
+      q
+    )
+  ) {
+    const f = pc.fire;
+    const r = pc.retirement;
+    lines.push(
+      `Actual Investable Corpus (excluding physical/residence assets): ${formatINR(f.investableCorpusInr)}`
+    );
+    if (f.monthlyExpenses <= 0) {
+      lines.push(
+        "Projected FIRE Year / Required Corpus: Monthly expenses are currently ₹0. Set your monthly expenses in FIRE & Retirement to compute your exact FIRE corpus and independence year."
+      );
+    } else {
+      lines.push(
+        `Projected Today's FIRE Target: ${formatINR(f.requiredCorpusToday)} (Current progress: ${formatPercent(f.currentFireProgressPct)})`
+      );
+      lines.push(
+        `Estimated FIRE Year: ${f.estimatedFireYear ?? "Beyond 45 years"}${f.estimatedFireAge ? ` (Age ${f.estimatedFireAge})` : ""} • Required Monthly SIP for target horizon: ${formatINR(f.monthlyInvestmentRequired)}/mo`
+      );
+      lines.push(
+        `Retirement Readiness (${r.yearsRemaining} yrs remaining): ${formatPercent(r.readinessPct)} (Projected ${formatCompactINR(r.projectedCorpus)} vs Required ${formatCompactINR(r.requiredRetirementCorpus)}; monthly shortfall ${formatINR(r.monthlyInvestmentShortfall)}/mo).`
+      );
+    }
+    lines.push(
+      `Assumptions (estimates, not guaranteed): ${f.expectedReturnPct}% return, ${f.inflationPct}% inflation, ${f.withdrawalRatePct}% withdrawal rate.`
+    );
+  } else if (
+    /\b(goal|goals|house|afford|falling behind|additional sip|shortfall)\b/.test(
+      q
+    )
+  ) {
+    if (snap.goalsSummary.length === 0) {
+      lines.push("No financial goals are currently configured.");
+    } else {
+      lines.push(
+        `Financial Goals Summary (${snap.goalsSummary.length} goal(s)):`
+      );
+      for (const g of snap.goalsSummary) {
+        const gapMonthly = Math.max(
+          0,
+          g.requiredMonthly - g.monthlyContribution
+        );
+        lines.push(
+          `• ${g.name} [${g.health}]: Actual ${formatCompactINR(g.currentAmount)} (Linked ${formatCompactINR(g.allocatedAmount)} + Cash ${formatCompactINR(g.standaloneAmount)}) / Target ${formatCompactINR(g.targetAmount)}${g.targetDate ? ` by ${g.targetDate}` : ""} • Req. SIP ${formatINR(g.requiredMonthly)}/mo${gapMonthly > 0 ? ` (+${formatINR(gapMonthly)}/mo additional needed)` : ""}`
+        );
+      }
+    }
+  } else if (/\b(emergency)\b/.test(q)) {
+    const e = pc.emergency;
+    lines.push(
+      `Actual Accessible Emergency Fund: ${formatINR(e.actualEmergencyValue)} (excludes locked PPF/NPS/ESOP).`
+    );
+    lines.push(
+      `Recommended Emergency Corpus (${e.coverageMonthsTarget} months): ${formatINR(e.recommendedCorpus)} • Remaining Gap: ${formatINR(e.remainingAmount)}${e.coverageMonths !== null ? ` • Current Coverage: ${e.coverageMonths} months` : ""}`
+    );
+  } else if (
+    /\b(liquid|liquidity|concentration|risk|risks|mismatch)\b/.test(q)
+  ) {
+    const r = pc.risk;
+    lines.push(
+      `Actual Liquid Portfolio Assets: ${formatCompactINR(r.liquidAssetsInr)} (${r.liquidAssetsPct.toFixed(1)}% of portfolio). Top 5 holdings share: ${r.topFiveSharePct.toFixed(1)}%.`
+    );
+    if (r.concentrationAlerts.length > 0) {
+      lines.push("Concentration Indicators:");
+      for (const a of r.concentrationAlerts) {
+        lines.push(`• ${a.message}`);
+      }
+    } else {
+      lines.push("No configured concentration thresholds are currently exceeded.");
+    }
+    if (r.maturityMismatches.length > 0) {
+      lines.push("Goal Maturity Mismatches:");
+      for (const mm of r.maturityMismatches) {
+        lines.push(
+          `• ${mm.holdingName} matures ${mm.holdingMaturityDate}, after goal "${mm.goalName}" (${mm.goalTargetDate}).`
+        );
+      }
+    }
+  } else if (
     q.includes("xirr") ||
     q.includes("best") ||
     q.includes("perform") ||
@@ -412,7 +767,11 @@ export async function askPersonalAssistant(
   const safeSnap = buildMinimizedSnapshot(snap, cfg.isRemoteAiEndpoint);
 
   const systemPrompt = `You are BPS Personal Wealth Assistant inside the user's Wealth Tracker.
-Always base numbers strictly on the live portfolio JSON below. Use Indian Rupee formatting (₹, Lakhs, Crores). Do not invent figures; if data is missing, state that it is unknown.
+Rules:
+1. Base all numerical figures strictly on the deterministic LIVE PORTFOLIO SNAPSHOT JSON below. Never invent figures; if data is missing (e.g. monthly expenses or savings rate), state that it is not recorded.
+2. Clearly distinguish ACTUAL recorded values from PROJECTED estimates and always state the assumptions (expected return, inflation, withdrawal rate) when discussing projections.
+3. Never execute transactions or modify investment allocations; provide read-only analysis and clear recommendations only.
+4. Use Indian Rupee formatting (₹, Lakhs, Crores).
 Current page context: ${pageContext}
 
 LIVE PORTFOLIO SNAPSHOT:

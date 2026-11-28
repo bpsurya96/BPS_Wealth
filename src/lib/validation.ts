@@ -232,6 +232,126 @@ export const updateSettingsSchema = z.object({
   emergencyFundTarget: z.coerce.number().finite().min(0).optional(),
 });
 
+export const goalPrioritySchema = z.enum(["high", "medium", "low"]);
+export const goalStatusSchema = z.enum([
+  "active",
+  "paused",
+  "completed",
+  "archived",
+]);
+
+export const createGoalSchema = z.object({
+  name: z.string().trim().min(1, "Goal name is required").max(160),
+  category: z.string().trim().min(1).max(60).default("custom"),
+  description: z.string().trim().max(500).default(""),
+  targetAmount: z.coerce.number().finite().positive("Target amount must be positive"),
+  currentAmount: z.coerce.number().finite().min(0).default(0),
+  targetDate: optionalDateSchema,
+  priority: goalPrioritySchema.default("medium"),
+  expectedAnnualReturn: z.coerce.number().finite().min(0).max(50).default(10),
+  inflationRate: z.coerce.number().finite().min(0).max(30).default(6),
+  monthlyContribution: z.coerce.number().finite().min(0).default(0),
+  status: goalStatusSchema.default("active"),
+  notes: z.string().trim().max(500).default(""),
+});
+
+export const patchGoalSchema = z.object({
+  id: z.coerce.number().int().positive(),
+  name: z.string().trim().min(1).max(160).optional(),
+  category: z.string().trim().min(1).max(60).optional(),
+  description: z.string().trim().max(500).optional(),
+  targetAmount: z.coerce.number().finite().positive().optional(),
+  currentAmount: z.coerce.number().finite().min(0).optional(),
+  targetDate: optionalDateSchema.optional(),
+  priority: goalPrioritySchema.optional(),
+  expectedAnnualReturn: z.coerce.number().finite().min(0).max(50).optional(),
+  inflationRate: z.coerce.number().finite().min(0).max(30).optional(),
+  monthlyContribution: z.coerce.number().finite().min(0).optional(),
+  status: goalStatusSchema.optional(),
+  notes: z.string().trim().max(500).optional(),
+});
+
+export const upsertGoalAllocationSchema = z
+  .object({
+    goalId: z.coerce.number().int().positive(),
+    holdingId: z.coerce.number().int().positive(),
+    allocationType: z.enum(["amount", "percentage"]).default("amount"),
+    allocatedAmount: z.coerce.number().finite().min(0).default(0),
+    allocationPct: z.coerce.number().finite().min(0).max(100).default(0),
+    notes: z.string().trim().max(300).default(""),
+  })
+  .refine(
+    (val) =>
+      (val.allocationType === "amount" && val.allocatedAmount > 0) ||
+      (val.allocationType === "percentage" && val.allocationPct > 0),
+    {
+      message: "Allocation amount or percentage must be greater than 0",
+    }
+  );
+
+export const createGoalContributionSchema = z.object({
+  goalId: z.coerce.number().int().positive(),
+  date: dateSchema.optional(),
+  amount: z.coerce.number().finite().positive("Amount must be greater than 0"),
+  source: z.enum(["manual", "sip", "lump_sum"]).default("manual"),
+  applyToStandaloneSavings: z.boolean().default(true),
+  notes: z.string().trim().max(300).default(""),
+});
+
+export const updatePlanningProfileSchema = z.object({
+  currentAge: z.coerce.number().int().min(18).max(100).nullable().optional(),
+  plannedRetirementAge: z.coerce.number().int().min(25).max(100).optional(),
+  lifeExpectancy: z.coerce.number().int().min(40).max(120).optional(),
+  monthlyExpenses: z.coerce.number().finite().min(0).optional(),
+  expenseInflationPct: z.coerce.number().finite().min(0).max(25).optional(),
+  expectedReturnPct: z.coerce.number().finite().min(0).max(40).optional(),
+  safeWithdrawalRatePct: z.coerce.number().finite().min(1).max(15).optional(),
+  otherRetirementIncome: z.coerce.number().finite().min(0).optional(),
+  taxDragPct: z.coerce.number().finite().min(0).max(50).optional(),
+  includePrimaryResidence: z.boolean().optional(),
+  emergencyMonthsTarget: z.coerce.number().int().refine((v) => [3, 6, 9, 12].includes(v), {
+    message: "Coverage target must be 3, 6, 9, or 12 months",
+  }).optional(),
+  concentrationHoldingWarnPct: z.coerce.number().finite().min(5).max(100).optional(),
+  concentrationCategoryWarnPct: z.coerce.number().finite().min(5).max(100).optional(),
+  concentrationCurrencyWarnPct: z.coerce.number().finite().min(5).max(100).optional(),
+});
+
+export const whatIfAdjustmentsSchema = z.object({
+  salaryChangePct: z.coerce.number().finite().min(-100).max(500).default(0),
+  additionalRentalMonthly: z.coerce.number().finite().min(0).default(0),
+  additionalPassiveMonthly: z.coerce.number().finite().min(0).default(0),
+  sipDeltaMonthly: z.coerce.number().finite().default(0),
+  pauseSipMonths: z.coerce.number().int().min(0).max(120).default(0),
+  annualLumpSumAddition: z.coerce.number().finite().min(0).default(0),
+  returnRateOverridePct: z.coerce.number().finite().min(-50).max(50).nullable().default(null),
+  marketShockPct: z.coerce.number().finite().min(-90).max(200).default(0),
+  newMonthlyExpenseDelta: z.coerce.number().finite().default(0),
+  oneTimeExpense: z.coerce.number().finite().min(0).default(0),
+  loanPrepaymentAmount: z.coerce.number().finite().min(0).default(0),
+  emiDeltaMonthly: z.coerce.number().finite().min(0).default(0),
+  closeLoanIds: z.array(z.coerce.number().int().positive()).default([]),
+});
+
+export const saveScenarioSchema = z.object({
+  id: z.coerce.number().int().positive().optional(),
+  name: z.string().trim().min(1, "Scenario name is required").max(120),
+  description: z.string().trim().max(400).default(""),
+  adjustments: whatIfAdjustmentsSchema,
+});
+
+export const upsertScorecardMonthSchema = z.object({
+  month: monthSchema,
+  trackedExpenses: z.coerce.number().finite().min(0).nullable().optional(),
+  notes: z.string().trim().max(500).default(""),
+});
+
+export const createMilestoneSchema = z.object({
+  label: z.string().trim().min(1).max(80),
+  targetAmount: z.coerce.number().finite().positive(),
+  notes: z.string().trim().max(300).default(""),
+});
+
 export const aiChatSchema = z.object({
   prompt: z.string().trim().min(1, "Prompt is required").max(4000),
   context: z.string().trim().max(60).default("overview"),

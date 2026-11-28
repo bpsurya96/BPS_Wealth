@@ -36,14 +36,14 @@ interface PendingExtraction {
 
 const CONTEXT_PROMPTS: Record<string, string[]> = {
   overview: [
-    "Plan how to reach my Emergency Fund & long-term goals faster",
-    "Give me a complete snapshot of my Net Worth and XIRR",
-    "Summarize my Main vs Passive Income ratio",
+    "What are the biggest risks in my current financial position?",
+    "When can I become financially independent?",
+    "Which goal is falling behind and how much additional SIP do I need?",
   ],
   investments: [
     "Which SIPs have the highest XIRR right now?",
-    "Plan my monthly SIP rebalancing across MF, Stocks, NPS, PPF",
-    "How close am I to my Emergency Fund target?",
+    "Is my portfolio sufficiently liquid?",
+    "How much emergency fund do I need?",
   ],
   income: [
     "How much Passive Income did I earn vs Salary?",
@@ -52,6 +52,27 @@ const CONTEXT_PROMPTS: Record<string, string[]> = {
   loans: [
     "Review my Loan payoff status and Insurance documents",
     "Plan an optimal loan prepayment schedule",
+  ],
+  goals: [
+    "Which goal is falling behind?",
+    "How much additional SIP do I need?",
+    "How much emergency fund do I need?",
+  ],
+  fire: [
+    "When can I become financially independent?",
+    "Am I saving enough for retirement?",
+  ],
+  simulator: [
+    "What happens if I increase my SIP by ₹5,000?",
+    "What if my salary increases by 10%?",
+  ],
+  "portfolio-risk": [
+    "Is my portfolio sufficiently liquid?",
+    "What are the biggest risks in my current financial position?",
+  ],
+  scorecard: [
+    "Summarize my latest monthly wealth scorecard",
+    "What if my salary increases by 10%?",
   ],
 };
 

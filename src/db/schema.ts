@@ -250,12 +250,176 @@ export const financialGoals = sqliteTable("financial_goals", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   name: text("name").notNull(),
   category: text("category").notNull().default("wealth"),
+  description: text("description").notNull().default(""),
   targetAmount: real("target_amount").notNull().default(0),
   currentAmount: real("current_amount").notNull().default(0),
   targetMinor: integer("target_minor").notNull().default(0),
   currentMinor: integer("current_minor").notNull().default(0),
   targetDate: text("target_date").default(""),
+  priority: text("priority").notNull().default("medium"), // high | medium | low
+  expectedAnnualReturn: real("expected_annual_return").notNull().default(10),
+  inflationRate: real("inflation_rate").notNull().default(6),
+  monthlyContribution: real("monthly_contribution").notNull().default(0),
+  monthlyContributionMinor: integer("monthly_contribution_minor")
+    .notNull()
+    .default(0),
+  status: text("status").notNull().default("active"), // active | paused | completed | archived
   notes: text("notes").default(""),
+  createdAt: text("created_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+  updatedAt: text("updated_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+});
+
+export const goalInvestmentAllocations = sqliteTable(
+  "goal_investment_allocations",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    goalId: integer("goal_id")
+      .notNull()
+      .references(() => financialGoals.id, { onDelete: "cascade" }),
+    holdingId: integer("holding_id")
+      .notNull()
+      .references(() => investmentHoldings.id, { onDelete: "cascade" }),
+    allocationType: text("allocation_type").notNull().default("amount"), // amount | percentage
+    allocatedAmount: real("allocated_amount").notNull().default(0),
+    allocatedMinor: integer("allocated_minor").notNull().default(0),
+    allocationPct: real("allocation_pct").notNull().default(0),
+    notes: text("notes").notNull().default(""),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    updatedAt: text("updated_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  }
+);
+
+export const goalContributions = sqliteTable("goal_contributions", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  goalId: integer("goal_id")
+    .notNull()
+    .references(() => financialGoals.id, { onDelete: "cascade" }),
+  date: text("date").notNull(),
+  amount: real("amount").notNull().default(0),
+  amountMinor: integer("amount_minor").notNull().default(0),
+  source: text("source").notNull().default("manual"), // manual | sip | lump_sum
+  notes: text("notes").notNull().default(""),
+  createdAt: text("created_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+});
+
+export const goalSnapshots = sqliteTable("goal_snapshots", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  goalId: integer("goal_id")
+    .notNull()
+    .references(() => financialGoals.id, { onDelete: "cascade" }),
+  snapshotDate: text("snapshot_date").notNull(),
+  standaloneMinor: integer("standalone_minor").notNull().default(0),
+  allocatedMinor: integer("allocated_minor").notNull().default(0),
+  totalMinor: integer("total_minor").notNull().default(0),
+  targetMinor: integer("target_minor").notNull().default(0),
+  createdAt: text("created_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+});
+
+export const planningProfiles = sqliteTable("planning_profiles", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  profileKey: text("profile_key").notNull().unique(),
+  currentAge: integer("current_age"),
+  plannedRetirementAge: integer("planned_retirement_age").notNull().default(50),
+  lifeExpectancy: integer("life_expectancy").notNull().default(85),
+  monthlyExpenses: real("monthly_expenses").notNull().default(0),
+  monthlyExpensesMinor: integer("monthly_expenses_minor").notNull().default(0),
+  expenseInflationPct: real("expense_inflation_pct").notNull().default(6),
+  expectedReturnPct: real("expected_return_pct").notNull().default(11),
+  safeWithdrawalRatePct: real("safe_withdrawal_rate_pct").notNull().default(3.5),
+  otherRetirementIncome: real("other_retirement_income").notNull().default(0),
+  otherRetirementIncomeMinor: integer("other_retirement_income_minor")
+    .notNull()
+    .default(0),
+  taxDragPct: real("tax_drag_pct").notNull().default(10),
+  includePrimaryResidence: integer("include_primary_residence", {
+    mode: "boolean",
+  })
+    .notNull()
+    .default(false),
+  emergencyMonthsTarget: integer("emergency_months_target")
+    .notNull()
+    .default(6),
+  concentrationHoldingWarnPct: real("concentration_holding_warn_pct")
+    .notNull()
+    .default(25),
+  concentrationCategoryWarnPct: real("concentration_category_warn_pct")
+    .notNull()
+    .default(45),
+  concentrationCurrencyWarnPct: real("concentration_currency_warn_pct")
+    .notNull()
+    .default(35),
+  updatedAt: text("updated_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+});
+
+export const financialScenarios = sqliteTable("financial_scenarios", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull(),
+  description: text("description").notNull().default(""),
+  configJson: text("config_json").notNull().default("{}"),
+  createdAt: text("created_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+  updatedAt: text("updated_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+});
+
+export const monthlyWealthSnapshots = sqliteTable("monthly_wealth_snapshots", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  month: text("month").notNull().unique(),
+  salaryMinor: integer("salary_minor").notNull().default(0),
+  rentalMinor: integer("rental_minor").notNull().default(0),
+  dividendMinor: integer("dividend_minor").notNull().default(0),
+  otherIncomeMinor: integer("other_income_minor").notNull().default(0),
+  totalIncomeMinor: integer("total_income_minor").notNull().default(0),
+  emiMinor: integer("emi_minor").notNull().default(0),
+  insuranceMinor: integer("insurance_minor").notNull().default(0),
+  trackedExpensesMinor: integer("tracked_expenses_minor"),
+  totalExpensesMinor: integer("total_expenses_minor"),
+  invContributionsMinor: integer("inv_contributions_minor").notNull().default(0),
+  employerContributionsMinor: integer("employer_contributions_minor")
+    .notNull()
+    .default(0),
+  sipCommitmentMinor: integer("sip_commitment_minor").notNull().default(0),
+  marketGainMinor: integer("market_gain_minor").notNull().default(0),
+  portfolioValueMinor: integer("portfolio_value_minor").notNull().default(0),
+  totalAssetsMinor: integer("total_assets_minor").notNull().default(0),
+  totalLiabilitiesMinor: integer("total_liabilities_minor").notNull().default(0),
+  netWorthMinor: integer("net_worth_minor").notNull().default(0),
+  savingsRatePct: real("savings_rate_pct"),
+  investmentRatePct: real("investment_rate_pct"),
+  debtToAssetPct: real("debt_to_asset_pct"),
+  notes: text("notes").notNull().default(""),
+  createdAt: text("created_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+  updatedAt: text("updated_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+});
+
+export const netWorthMilestones = sqliteTable("net_worth_milestones", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  label: text("label").notNull(),
+  targetAmount: real("target_amount").notNull().default(0),
+  targetMinor: integer("target_minor").notNull().default(0),
+  isPreset: integer("is_preset", { mode: "boolean" }).notNull().default(false),
+  achievedDate: text("achieved_date").notNull().default(""),
+  notes: text("notes").notNull().default(""),
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),

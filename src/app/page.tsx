@@ -142,6 +142,62 @@ interface DashboardData {
     currentAmount: number;
     notes: string;
   }>;
+  planning?: {
+    goals: {
+      activeGoalsCount: number;
+      totalTargetAmount: number;
+      totalCurrentAmount: number;
+      overallProgressPct: number;
+      monthlyContributionRequired: number;
+      attentionCount: number;
+    };
+    goalsRequiringAttention: Array<{
+      id: number;
+      name: string;
+      health: string;
+      requiredMonthly: number;
+      plannedMonthly: number;
+    }>;
+    milestones: {
+      currentNetWorthInr: number;
+      previousMilestone: { label: string } | null;
+      nextMilestone: { label: string; remainingAmount: number; estimatedDate: string | null } | null;
+      progressToNextPct: number;
+    };
+    fire: {
+      monthlyExpensesConfigured: boolean;
+      currentFireProgressPct: number;
+      requiredCorpusToday: number;
+      estimatedFireYear: number | null;
+      estimatedFireAge: number | null;
+    };
+    scorecard: {
+      month: string;
+      totalIncome: number;
+      invContributions: number;
+      investmentRatePct: number | null;
+      savingsRatePct: number | null;
+    };
+    emergency: {
+      coverageMonths: number | null;
+      coverageMonthsTarget: number;
+      actualEmergencyValue: number;
+      recommendedCorpus: number;
+      progressPct: number;
+    };
+    topRiskWarning: string | null;
+    liquidityPct: number;
+    goalEnrichedList: Array<{
+      id: number;
+      name: string;
+      category: string;
+      targetAmount: number;
+      currentAmount: number;
+      completionPct: number;
+      health: string;
+      notes: string;
+    }>;
+  };
 }
 
 const COLORS = [
@@ -793,6 +849,145 @@ export default function DashboardPage() {
         </div>
       )}
 
+      {/* Wealth Planning Pulse (Compact Integrated Summary) */}
+      {data.planning && (
+        <div className="rounded-2xl bg-white border border-slate-200/80 p-5 shadow-xs space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <h2 className="font-semibold text-slate-900 text-sm">
+              Wealth Planning & Intelligence Summary
+            </h2>
+            <div className="flex flex-wrap gap-3 text-xs font-medium text-indigo-600">
+              <Link href="/goals" className="hover:underline">
+                Goals →
+              </Link>
+              <Link href="/fire" className="hover:underline">
+                FIRE →
+              </Link>
+              <Link href="/simulator" className="hover:underline">
+                Simulator →
+              </Link>
+              <Link href="/portfolio-risk" className="hover:underline">
+                Risk →
+              </Link>
+              <Link href="/scorecard" className="hover:underline">
+                Scorecard →
+              </Link>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 text-xs">
+            <Link
+              href="/goals"
+              className="rounded-xl border border-slate-100 bg-slate-50/70 hover:border-indigo-200 p-3.5 transition"
+            >
+              <div className="text-[11px] font-semibold text-slate-500 uppercase">
+                Goal Achievement
+              </div>
+              <div className="text-lg font-bold text-indigo-700 mt-1 tabular-nums">
+                {Math.round(data.planning.goals.overallProgressPct * 100)}%
+              </div>
+              <div className="text-[11px] text-slate-500 mt-0.5 tabular-nums">
+                {data.planning.goals.activeGoalsCount} active •{" "}
+                {formatCompactINR(data.planning.goals.totalCurrentAmount)} /{" "}
+                {formatCompactINR(data.planning.goals.totalTargetAmount)}
+              </div>
+            </Link>
+
+            <Link
+              href="/goals?tab=milestones"
+              className="rounded-xl border border-slate-100 bg-slate-50/70 hover:border-indigo-200 p-3.5 transition"
+            >
+              <div className="text-[11px] font-semibold text-slate-500 uppercase">
+                Net Worth Milestone
+              </div>
+              <div className="text-lg font-bold text-slate-900 mt-1">
+                {data.planning.milestones.nextMilestone
+                  ? data.planning.milestones.nextMilestone.label
+                  : "All Achieved"}
+              </div>
+              <div className="text-[11px] text-slate-500 mt-0.5 tabular-nums">
+                {data.planning.milestones.nextMilestone
+                  ? `${Math.round(data.planning.milestones.progressToNextPct * 100)}% • Est. ${data.planning.milestones.nextMilestone.estimatedDate ?? "—"}`
+                  : "Add custom milestone"}
+              </div>
+            </Link>
+
+            <Link
+              href="/fire"
+              className="rounded-xl border border-slate-100 bg-slate-50/70 hover:border-indigo-200 p-3.5 transition"
+            >
+              <div className="text-[11px] font-semibold text-slate-500 uppercase">
+                FIRE Progress
+              </div>
+              <div className="text-lg font-bold text-emerald-700 mt-1 tabular-nums">
+                {data.planning.fire.monthlyExpensesConfigured
+                  ? formatPercent(data.planning.fire.currentFireProgressPct)
+                  : "Set expenses"}
+              </div>
+              <div className="text-[11px] text-slate-500 mt-0.5">
+                {data.planning.fire.estimatedFireYear
+                  ? `Est. ${data.planning.fire.estimatedFireYear}${data.planning.fire.estimatedFireAge ? ` (Age ${data.planning.fire.estimatedFireAge})` : ""}`
+                  : "Configure in FIRE tracker"}
+              </div>
+            </Link>
+
+            <Link
+              href="/scorecard"
+              className="rounded-xl border border-slate-100 bg-slate-50/70 hover:border-indigo-200 p-3.5 transition"
+            >
+              <div className="text-[11px] font-semibold text-slate-500 uppercase">
+                Monthly Scorecard ({data.planning.scorecard.month})
+              </div>
+              <div className="text-lg font-bold text-slate-900 mt-1 tabular-nums">
+                {formatCompactINR(data.planning.scorecard.invContributions)}
+              </div>
+              <div className="text-[11px] text-slate-500 mt-0.5 tabular-nums">
+                Inv Rate:{" "}
+                {data.planning.scorecard.investmentRatePct !== null
+                  ? `${data.planning.scorecard.investmentRatePct}%`
+                  : "N/A"}{" "}
+                • Sav:{" "}
+                {data.planning.scorecard.savingsRatePct !== null
+                  ? `${data.planning.scorecard.savingsRatePct}%`
+                  : "Not enough data"}
+              </div>
+            </Link>
+
+            <Link
+              href="/portfolio-risk"
+              className="rounded-xl border border-slate-100 bg-slate-50/70 hover:border-indigo-200 p-3.5 transition"
+            >
+              <div className="text-[11px] font-semibold text-slate-500 uppercase">
+                Risk & Liquidity
+              </div>
+              <div className="text-lg font-bold text-sky-700 mt-1 tabular-nums">
+                {data.planning.liquidityPct.toFixed(0)}% Liquid
+              </div>
+              <div className="text-[11px] text-slate-600 mt-0.5 truncate">
+                {data.planning.topRiskWarning ?? "No threshold alerts"}
+              </div>
+            </Link>
+          </div>
+
+          {data.planning.goalsRequiringAttention.length > 0 && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50/70 px-3.5 py-2 flex flex-wrap items-center justify-between gap-2 text-xs text-amber-900">
+              <span>
+                <strong>Goals needing attention:</strong>{" "}
+                {data.planning.goalsRequiringAttention
+                  .map((g) => g.name)
+                  .join(", ")}
+              </span>
+              <Link
+                href="/goals"
+                className="font-semibold text-amber-950 underline"
+              >
+                Review Goals →
+              </Link>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Charts Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="rounded-2xl bg-white border border-slate-200/80 p-5 shadow-xs">
@@ -951,44 +1146,57 @@ export default function DashboardPage() {
         </div>
 
         <div className="rounded-2xl bg-white border border-slate-200/80 p-5 shadow-xs">
-          <div className="flex items-center gap-2 mb-4">
-            <Target className="h-4 w-4 text-indigo-600" />
-            <h2 className="font-semibold text-slate-900">Goals</h2>
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <Target className="h-4 w-4 text-indigo-600" />
+              <h2 className="font-semibold text-slate-900">Goals</h2>
+            </div>
+            <Link
+              href="/goals"
+              className="text-xs font-medium text-indigo-600 hover:underline"
+            >
+              Goals & Planning →
+            </Link>
           </div>
-          {data.goals.length === 0 ? (
+          {(data.planning?.goalEnrichedList ?? data.goals).length === 0 ? (
             <p className="text-sm text-slate-400 py-10 text-center">
               No goals added yet.
             </p>
           ) : (
             <div className="space-y-3">
-              {data.goals.map((g) => {
-                const pct =
-                  g.targetAmount > 0
-                    ? Math.min(1, g.currentAmount / g.targetAmount)
-                    : 0;
-                return (
-                  <div
-                    key={g.id}
-                    className="rounded-xl border border-slate-100 bg-slate-50/80 p-3"
-                  >
-                    <div className="flex items-center justify-between text-sm font-medium text-slate-800">
-                      <span>{g.name}</span>
-                      <span className="tabular-nums text-xs text-indigo-700 font-semibold">
-                        {formatCompactINR(g.targetAmount)}
-                      </span>
+              {(data.planning?.goalEnrichedList ?? data.goals)
+                .slice(0, 5)
+                .map((g) => {
+                  const pct =
+                    g.targetAmount > 0
+                      ? Math.min(1, g.currentAmount / g.targetAmount)
+                      : 0;
+                  return (
+                    <div
+                      key={g.id}
+                      className="rounded-xl border border-slate-100 bg-slate-50/80 p-3"
+                    >
+                      <div className="flex items-center justify-between text-sm font-medium text-slate-800">
+                        <span>{g.name}</span>
+                        <span className="tabular-nums text-xs text-indigo-700 font-semibold">
+                          {formatCompactINR(g.currentAmount)} /{" "}
+                          {formatCompactINR(g.targetAmount)}
+                        </span>
+                      </div>
+                      <div className="mt-1.5 w-full bg-slate-200 rounded-full h-1.5">
+                        <div
+                          className="bg-gradient-to-r from-indigo-500 to-emerald-500 h-1.5 rounded-full"
+                          style={{ width: `${Math.round(pct * 100)}%` }}
+                        />
+                      </div>
+                      {g.notes && (
+                        <p className="text-xs text-slate-500 mt-1.5">
+                          {g.notes}
+                        </p>
+                      )}
                     </div>
-                    <div className="mt-1.5 w-full bg-slate-200 rounded-full h-1.5">
-                      <div
-                        className="bg-gradient-to-r from-indigo-500 to-emerald-500 h-1.5 rounded-full"
-                        style={{ width: `${Math.round(pct * 100)}%` }}
-                      />
-                    </div>
-                    {g.notes && (
-                      <p className="text-xs text-slate-500 mt-1.5">{g.notes}</p>
-                    )}
-                  </div>
-                );
-              })}
+                  );
+                })}
             </div>
           )}
         </div>

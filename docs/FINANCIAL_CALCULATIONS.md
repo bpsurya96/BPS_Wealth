@@ -62,3 +62,36 @@ All monetary calculations are backed by exact integer minor units (`src/lib/curr
   - `monthly` $\rightarrow \text{premiumAmount} \times 12$
   - `annual` $\rightarrow \text{premiumAmount}$
 - Dashboard totals aggregate annualized premiums across `active` policies.
+
+---
+
+## 6. Goal Planning, Compounding & Allocation Safety (`src/lib/wealth-calculations.ts`)
+
+- **Effective Monthly Compounding Rate**:
+  $$r_m = (1 + R)^{1/12} - 1$$
+  so 12 months of monthly compounding equals the exact annual rate $R$.
+- **Future Value with SIP** ($n$ months):
+  $$FV(P, C, r_m, n) = P(1 + r_m)^n + C \cdot \frac{(1 + r_m)^n - 1}{r_m}$$
+- **Inflation-Adjusted Goal Target**:
+  $$T_{\text{adj}} = T_{\text{nominal}} \cdot (1 + i)^{n/12}$$
+- **Required Monthly Contribution**:
+  $$C^* = \frac{\max(0, T_{\text{adj}} - P(1 + r_m)^n)}{\frac{(1 + r_m)^n - 1}{r_m}}$$
+- **Allocation Safety Invariant**:
+  For every holding $h$, total allocated INR across all goals (`goal_investment_allocations`) is enforced in a SQLite transaction to satisfy $\sum_{g} \text{allocated}(g, h) \le \text{currentValueInr}(h)$. If holding market value subsequently drops below previously recorded fixed allocations, `computeEffectiveHoldingAllocations` caps effective goal allocations proportionally to $\text{currentValueInr}(h)$ and flags `overAllocated = true`.
+
+---
+
+## 7. FIRE & Retirement Corpus (`calculateFireAnalysis`, `calculateRetirementPlan`)
+
+- **Investable Corpus**: Excludes physical / primary residence assets unless explicitly included by the user.
+- **Required FIRE Corpus at Year $t$**:
+  $$\text{NetGap}(t) = \max\left(0, E_0(1 + i)^t - O_0(1 + i)^t\right)$$
+  $$\text{RequiredCorpus}(t) = \frac{\text{NetGap}(t) / (1 - \tau)}{\text{SWR}}$$
+  where $E_0$ is annual expenses today, $O_0$ is other annual retirement income, $\tau$ is effective tax drag, and $\text{SWR}$ is the configurable withdrawal rate assumption (not presented as a guarantee).
+
+---
+
+## 8. Monthly Wealth Creation Scorecard
+
+- **Contributions vs Appreciation**: Monthly investment inflows (`sip`, `buy`, `installment`, `employer_contribution`) are aggregated strictly from `investment_transactions` using transaction FX rates and never mixed with unrealized market gains.
+- **Missing Expense Guard**: Savings rate and monthly surplus are only calculated when the user has recorded tracked expenses for the month (`tracked_expenses_minor IS NOT NULL`); otherwise `"Not enough data"` is shown.

@@ -16,20 +16,30 @@ import {
   X,
   Sparkles,
   Database,
+  Target,
+  Flame,
+  SlidersHorizontal,
+  ShieldAlert,
+  BarChart3,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { PinGate } from "./PinGate";
 import { AiAssistantDrawer } from "./AiAssistantDrawer";
 
 const NAV_ITEMS = [
-  { href: "/", label: "Overview", icon: LayoutDashboard },
-  { href: "/investments", label: "Investments & SIPs", icon: TrendingUp },
-  { href: "/income", label: "Income & Passive", icon: Wallet },
-  { href: "/quick-log", label: "Quick-Log Month", icon: Zap },
-  { href: "/loans", label: "Loans & Insurance", icon: Landmark },
-  { href: "/import", label: "Import & Backup", icon: FileSpreadsheet },
-  { href: "/sql-studio", label: "SQL Studio", icon: Database },
-  { href: "/settings", label: "Settings & AI Env", icon: Settings },
+  { href: "/", label: "Overview", icon: LayoutDashboard, group: "core" },
+  { href: "/investments", label: "Investments & SIPs", icon: TrendingUp, group: "core" },
+  { href: "/income", label: "Income & Passive", icon: Wallet, group: "core" },
+  { href: "/quick-log", label: "Quick-Log Month", icon: Zap, group: "core" },
+  { href: "/loans", label: "Loans & Insurance", icon: Landmark, group: "core" },
+  { href: "/goals", label: "Goals & Planning", icon: Target, group: "planning" },
+  { href: "/fire", label: "FIRE & Retirement", icon: Flame, group: "planning" },
+  { href: "/simulator", label: "What-if Simulator", icon: SlidersHorizontal, group: "planning" },
+  { href: "/portfolio-risk", label: "Portfolio Risk", icon: ShieldAlert, group: "planning" },
+  { href: "/scorecard", label: "Wealth Scorecard", icon: BarChart3, group: "planning" },
+  { href: "/import", label: "Import & Backup", icon: FileSpreadsheet, group: "system" },
+  { href: "/sql-studio", label: "SQL Studio", icon: Database, group: "system" },
+  { href: "/settings", label: "Settings & AI Env", icon: Settings, group: "system" },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -49,7 +59,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       ? "income"
       : pathname.startsWith("/loans")
         ? "loans"
-        : "overview";
+        : pathname.startsWith("/goals")
+          ? "goals"
+          : pathname.startsWith("/fire")
+            ? "fire"
+            : pathname.startsWith("/simulator")
+              ? "simulator"
+              : pathname.startsWith("/portfolio-risk")
+                ? "portfolio-risk"
+                : pathname.startsWith("/scorecard")
+                  ? "scorecard"
+                  : "overview";
 
   const checkAuth = useCallback(async () => {
     try {
@@ -166,29 +186,38 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
 
         <nav className="flex-1 p-3 space-y-1 overflow-y-auto" aria-label="Primary">
-          {NAV_ITEMS.map((item) => {
-            const Icon = item.icon;
-            const active =
-              item.href === "/"
-                ? pathname === "/"
-                : pathname.startsWith(item.href);
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                onClick={() => setMobileOpen(false)}
-                className={cn(
-                  "flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition",
-                  active
-                    ? "bg-gradient-to-r from-emerald-500/20 to-cyan-500/10 text-emerald-300 border border-emerald-500/30 shadow-xs"
-                    : "text-slate-300 hover:bg-white/5 hover:text-white"
-                )}
-              >
-                <Icon className="h-4 w-4 shrink-0" />
-                {item.label}
-              </Link>
-            );
-          })}
+          {(["core", "planning", "system"] as const).map((group) => (
+            <div key={group} className="space-y-1 pt-1 first:pt-0">
+              {group !== "core" && (
+                <div className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                  {group === "planning" ? "Wealth Planning" : "Data & System"}
+                </div>
+              )}
+              {NAV_ITEMS.filter((i) => i.group === group).map((item) => {
+                const Icon = item.icon;
+                const active =
+                  item.href === "/"
+                    ? pathname === "/"
+                    : pathname.startsWith(item.href);
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    onClick={() => setMobileOpen(false)}
+                    className={cn(
+                      "flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition",
+                      active
+                        ? "bg-gradient-to-r from-emerald-500/20 to-cyan-500/10 text-emerald-300 border border-emerald-500/30 shadow-xs"
+                        : "text-slate-300 hover:bg-white/5 hover:text-white"
+                    )}
+                  >
+                    <Icon className="h-4 w-4 shrink-0" />
+                    {item.label}
+                  </Link>
+                );
+              })}
+            </div>
+          ))}
         </nav>
 
         <div className="p-3 border-t border-slate-800/80 space-y-2">
